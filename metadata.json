@@ -1,0 +1,5 @@
+{
+  "name": "DietCoach Navigator",
+  "description": "AI Diet Execution Coach that adjusts food quantities based on daily metrics without introducing new foods.",
+  "requestFramePermissions": []
+}

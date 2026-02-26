@@ -1,0 +1,42 @@
+{
+  "meals": [
+    {
+      "name": "Breakfast",
+      "items": [
+        {
+          "foodName": "Oats",
+          "unit": "g",
+          "baseQuantity": 50,
+          "minQuantity": 40,
+          "maxQuantity": 60
+        },
+        {
+          "foodName": "Egg Whites",
+          "unit": "ml",
+          "baseQuantity": 200
+        }
+      ]
+    },
+    {
+      "name": "Lunch",
+      "items": [
+        {
+          "foodName": "Chicken Breast",
+          "unit": "g",
+          "baseQuantity": 150
+        },
+        {
+          "foodName": "Rice",
+          "unit": "g",
+          "baseQuantity": 100
+        }
+      ]
+    }
+  ],
+  "constraints": {
+    "forbiddenNewFoods": true
+  },
+  "confidence": 0.95,
+  "requiresUserConfirmation": false,
+  "extractionWarnings": []
+}

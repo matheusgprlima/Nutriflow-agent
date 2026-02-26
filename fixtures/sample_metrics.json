@@ -1,0 +1,19 @@
+{
+  "localDate": "2026-03-10",
+  "timezone": "America/New_York",
+  "steps": 12000,
+  "activeCaloriesKcal": 600,
+  "sleepHours": 7.5,
+  "restingHR": 55,
+  "avgHR": 70,
+  "hrvMs": 45,
+  "training": [
+    {
+      "type": "strength",
+      "durationMin": 60,
+      "intensity": "high"
+    }
+  ],
+  "confidence": 0.9,
+  "extractionWarnings": []
+}
