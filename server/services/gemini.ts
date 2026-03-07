@@ -8,16 +8,25 @@ import {
 } from "../../src/shared/schemas.js"; // Note: .js extension for ESM in Node
 import { z } from "zod";
 
-const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) {
-  console.warn("GEMINI_API_KEY is missing. AI features will fail.");
-}
+// Lazy initialization to ensure environment variables are loaded
+let ai: GoogleGenAI | null = null;
 
-const ai = new GoogleGenAI({ apiKey: apiKey || "dummy" });
+const getAi = () => {
+  if (!ai) {
+    const key = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    if (!key) {
+      console.error("CRITICAL: GEMINI_API_KEY (or API_KEY) is missing in environment variables.");
+      throw new Error("GEMINI_API_KEY is not configured.");
+    }
+    console.log(`Gemini Service initialized lazily with key: '${key.substring(0, 5)}...${key.substring(key.length - 5)}' (Length: ${key.length})`);
+    ai = new GoogleGenAI({ apiKey: key });
+  }
+  return ai;
+};
 
 // Helper to get model
-const getModel = (modelName: string = "gemini-2.5-flash-latest") => {
-  return ai.models;
+const getModel = (modelName: string = "gemini-flash-lite-latest") => {
+  return getAi().models;
 };
 
 // --- Prompts ---
@@ -79,22 +88,67 @@ Assume a generic tracking app interface.
 - "submit" to save.
 `;
 
+const LEGIBILITY_CHECK_PROMPT = `
+Analyze the provided images/documents for legibility for a diet and health tracking agent.
+We need to extract:
+1. Diet Plan: Meal names, food items, quantities.
+2. Health Metrics: Steps, calories, sleep data.
+3. Bioimpedance: Weight, body fat %.
+
+OUTPUT JSON ONLY:
+{
+  "category": "diet" | "metrics" | "bioimpedance" | "training",
+  "passed": boolean,
+  "reason": "string explanation",
+  "suggestions": ["string suggestion 1", "string suggestion 2"],
+  "confidence": number (0-1)
+}
+
+Fail if:
+- Text is too blurry to read numbers.
+- Glare obscures critical data.
+- The document is unrelated.
+`;
+
+// ... existing prompts ...
+
 // --- Service Methods ---
 
-export async function extractDiet(imagePath: string, mimeType: string) {
-  // In a real app, we would upload to Gemini. For now, we assume local file path or base64.
-  // Since we are in a container, we'll read the file and send as inline data.
+export async function checkLegibility(imagePaths: string[], mimeType: string) {
   const fs = await import("fs");
-  const fileData = fs.readFileSync(imagePath).toString("base64");
+  const parts: any[] = [];
+  
+  for (const path of imagePaths) {
+    const fileData = fs.readFileSync(path).toString("base64");
+    parts.push({ inlineData: { mimeType, data: fileData } });
+  }
+  parts.push({ text: LEGIBILITY_CHECK_PROMPT });
 
   const response = await getModel().generateContent({
-    model: "gemini-2.5-flash-latest",
-    contents: {
-      parts: [
-        { inlineData: { mimeType, data: fileData } },
-        { text: DIET_EXTRACTION_PROMPT }
-      ]
-    },
+    model: "gemini-flash-lite-latest",
+    contents: { parts },
+    config: {
+      responseMimeType: "application/json",
+    }
+  });
+
+  return JSON.parse(response.text || "{}");
+}
+
+export async function extractDiet(imagePaths: string | string[], mimeType: string) {
+  const paths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
+  const fs = await import("fs");
+  
+  const parts: any[] = [];
+  for (const path of paths) {
+    const fileData = fs.readFileSync(path).toString("base64");
+    parts.push({ inlineData: { mimeType, data: fileData } });
+  }
+  parts.push({ text: DIET_EXTRACTION_PROMPT });
+
+  const response = await getModel().generateContent({
+    model: "gemini-flash-lite-latest",
+    contents: { parts },
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -141,18 +195,20 @@ export async function extractDiet(imagePath: string, mimeType: string) {
   return JSON.parse(response.text || "{}");
 }
 
-export async function extractMetrics(imagePath: string, mimeType: string) {
+export async function extractMetrics(imagePaths: string | string[], mimeType: string) {
+  const paths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
   const fs = await import("fs");
-  const fileData = fs.readFileSync(imagePath).toString("base64");
+
+  const parts: any[] = [];
+  for (const path of paths) {
+    const fileData = fs.readFileSync(path).toString("base64");
+    parts.push({ inlineData: { mimeType, data: fileData } });
+  }
+  parts.push({ text: METRICS_EXTRACTION_PROMPT });
 
   const response = await getModel().generateContent({
-    model: "gemini-2.5-flash-latest",
-    contents: {
-      parts: [
-        { inlineData: { mimeType, data: fileData } },
-        { text: METRICS_EXTRACTION_PROMPT }
-      ]
-    },
+    model: "gemini-flash-lite-latest",
+    contents: { parts },
     config: {
       responseMimeType: "application/json",
       // We can use loose schema or strict. Let's use loose for now to avoid complexity in this snippet
@@ -179,7 +235,7 @@ export async function generatePlan(
   `;
 
   const response = await getModel().generateContent({
-    model: "gemini-2.5-flash-latest",
+    model: "gemini-flash-lite-latest",
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -197,7 +253,7 @@ export async function generateNavigatorActions(plan: any) {
   `;
 
   const response = await getModel().generateContent({
-    model: "gemini-2.5-flash-latest",
+    model: "gemini-flash-lite-latest",
     contents: prompt,
     config: {
       responseMimeType: "application/json",

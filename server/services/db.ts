@@ -33,9 +33,45 @@ db.exec(`
     data JSON,
     createdAt TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS runs (
+    id TEXT PRIMARY KEY,
+    userId TEXT,
+    status TEXT,
+    data JSON,
+    createdAt TEXT,
+    updatedAt TEXT
+  );
 `);
 
 export const dbService = {
+  // ... existing methods ...
+
+  createRun: (run: any) => {
+    const stmt = db.prepare('INSERT INTO runs (id, userId, status, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)');
+    stmt.run(run.id, run.userId, run.status, JSON.stringify(run), run.createdAt, run.updatedAt);
+  },
+
+  getRun: (id: string) => {
+    const stmt = db.prepare('SELECT * FROM runs WHERE id = ?');
+    const row = stmt.get(id) as any;
+    return row ? JSON.parse(row.data) : null;
+  },
+
+  updateRun: (id: string, updates: any) => {
+    // Fetch current run first to merge data
+    const stmtGet = db.prepare('SELECT data FROM runs WHERE id = ?');
+    const row = stmtGet.get(id) as any;
+    if (!row) throw new Error(`Run ${id} not found`);
+    
+    const currentRun = JSON.parse(row.data);
+    const updatedRun = { ...currentRun, ...updates, updatedAt: new Date().toISOString() };
+    
+    const stmt = db.prepare('UPDATE runs SET status = ?, data = ?, updatedAt = ? WHERE id = ?');
+    stmt.run(updatedRun.status, JSON.stringify(updatedRun), updatedRun.updatedAt, id);
+    return updatedRun;
+  },
+
   saveUpload: (id: string, filename: string, originalName: string, mimeType: string) => {
     const stmt = db.prepare('INSERT INTO uploads (id, filename, originalName, mimeType, createdAt) VALUES (?, ?, ?, ?, ?)');
     stmt.run(id, filename, originalName, mimeType, new Date().toISOString());

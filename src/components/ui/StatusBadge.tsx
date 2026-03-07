@@ -1,41 +1,29 @@
 import React from 'react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+import { clsx } from 'clsx';
 
 interface StatusBadgeProps {
-  status: 'active' | 'processing' | 'idle' | 'error' | 'warning';
-  label?: string;
+  status: 'active' | 'inactive' | 'warning' | 'success' | 'error' | 'neutral';
+  label: string;
+  className?: string;
 }
 
-export const StatusBadge = ({ status, label }: StatusBadgeProps) => {
-  const variants = {
-    active: "bg-primary/10 text-primary border-primary/20",
-    processing: "bg-accent/10 text-accent border-accent/20 animate-pulse",
-    idle: "bg-gray-800 text-gray-400 border-gray-700",
-    error: "bg-error/10 text-error border-error/20",
-    warning: "bg-warning/10 text-warning border-warning/20",
+export function StatusBadge({ status, label, className }: StatusBadgeProps) {
+  const styles = {
+    active: 'bg-primary/10 text-primary border-primary/20',
+    success: 'bg-green-500/10 text-green-400 border-green-500/20',
+    warning: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+    error: 'bg-red-500/10 text-red-400 border-red-500/20',
+    inactive: 'bg-white/5 text-gray-400 border-white/10',
+    neutral: 'bg-white/5 text-gray-400 border-white/10',
   };
 
   return (
-    <div
-      className={cn(
-        "inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border transition-colors duration-300 animate-in fade-in zoom-in-95",
-        variants[status]
-      )}
-    >
-      <span className={cn(
-        "w-2 h-2 rounded-full",
-        status === 'active' && "bg-primary animate-pulse-glow",
-        status === 'processing' && "bg-accent animate-spin",
-        status === 'idle' && "bg-gray-500",
-        status === 'error' && "bg-error",
-        status === 'warning' && "bg-warning"
-      )} />
-      {label || status.charAt(0).toUpperCase() + status.slice(1)}
-    </div>
+    <span className={clsx(
+      'px-2.5 py-0.5 rounded-full text-xs font-medium border',
+      styles[status] || styles.neutral,
+      className
+    )}>
+      {label}
+    </span>
   );
-};
+}

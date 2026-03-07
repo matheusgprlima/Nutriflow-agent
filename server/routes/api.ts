@@ -2,127 +2,230 @@ import express from 'express';
 import multer from 'multer';
 import { dbService } from '../services/db.js';
 import { saveFile } from '../services/storage.js';
-import { extractDiet, extractMetrics, generatePlan, generateNavigatorActions } from '../services/gemini.js';
+import { extractDiet, extractMetrics, generatePlan, generateNavigatorActions, checkLegibility } from '../services/gemini.js';
 import { DateTime } from 'luxon';
-import { z } from 'zod';
 import crypto from 'crypto';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Upload Endpoint ---
+// Log all API requests
+router.use((req, res, next) => {
+  console.log(`API Request: ${req.method} ${req.path}`);
+  next();
+});
+
+// Enforce 25MB limit
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } 
+});
+
+// --- Run Management ---
+
+router.post('/runs/create', (req, res) => {
+  try {
+    const { timezone } = req.body;
+    const runId = crypto.randomUUID();
+    const run = {
+      id: runId,
+      userId: 'dev-user', // Mock user
+      localDate: DateTime.now().setZone(timezone || 'UTC').toISODate(),
+      timezone: timezone || 'UTC',
+      status: 'draft',
+      uploads: [],
+      extraction: {
+        dietTemplate: null,
+        dailyMetrics: null,
+        bioImpedance: null,
+        legibilityReport: null
+      },
+      plan: null,
+      actions: null,
+      issues: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    dbService.createRun(run);
+    res.json({ runId, run });
+  } catch (error: any) {
+    console.error('Create run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/runs/:runId', (req, res) => {
+  try {
+    const run = dbService.getRun(req.params.runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    res.json(run);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- Uploads ---
+
 router.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const filename = await saveFile(req.file);
-    const id = crypto.randomUUID();
+    const { runId, category, timezone } = req.body;
+    if (!runId) return res.status(400).json({ error: 'runId required' });
+
+    const filepath = await saveFile(req.file, category || 'uncategorized', timezone || 'UTC');
+    const fileId = crypto.randomUUID();
     
-    // Save metadata to DB
-    dbService.saveUpload(id, filename, req.file.originalname, req.file.mimetype);
+    // Update Run
+    const run = dbService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
 
-    res.json({ id, filename, originalName: req.file.originalname });
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ error: 'Upload failed' });
+    const newUpload = {
+      category,
+      fileId,
+      storagePath: filepath,
+      mimeType: req.file.mimetype,
+      bytes: req.file.size,
+      filename: req.file.originalname
+    };
+
+    const updatedUploads = [...(run.uploads || []), newUpload];
+    dbService.updateRun(runId, { uploads: updatedUploads });
+
+    res.json({ success: true, file: newUpload });
+  } catch (error: any) {
+    console.error('Upload error details:', error);
+    res.status(500).json({ error: error.message || 'Upload failed' });
   }
 });
 
-// --- Extract Endpoint ---
-router.post('/extract', async (req, res) => {
+// --- Processing Flow ---
+
+router.post('/runs/:runId/start', async (req, res) => {
   try {
-    const { type, fileId, timezone } = req.body;
-    
-    // In a real app, we would look up the file path from DB using fileId
-    // For this demo, we assume fileId is the full path returned by upload
-    // (In production, never expose full paths to client)
-    const filePath = fileId; 
+    const { runId } = req.params;
+    const run = dbService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
 
-    if (!filePath) {
-      return res.status(400).json({ error: 'Missing fileId' });
-    }
+    // Update status to processing
+    dbService.updateRun(runId, { status: 'processing', issues: [] });
 
-    let result;
-    if (type === 'diet') {
-      result = await extractDiet(filePath, 'image/jpeg'); // Assuming JPEG for now
-      // Save template to DB
-      dbService.saveDietTemplate(crypto.randomUUID(), result);
-    } else if (type === 'metrics') {
-      result = await extractMetrics(filePath, 'image/jpeg');
-      // Save metrics to DB
-      const localDate = DateTime.now().setZone(timezone || 'UTC').toISODate();
-      dbService.saveDailyMetrics(crypto.randomUUID(), localDate, result);
-    } else {
-      return res.status(400).json({ error: 'Invalid extraction type' });
-    }
+    // Trigger async processing (fire and forget for response, but await for logic here since we don't have a job queue)
+    // In a real app, this would be a background job. Here we'll do it and client polls.
+    processRun(runId).catch(err => {
+      console.error(`Background processing failed for run ${runId}:`, err);
+      dbService.updateRun(runId, { status: 'failed', issues: [err.message] });
+    });
 
-    res.json(result);
-  } catch (error) {
-    console.error('Extraction error:', error);
-    res.status(500).json({ error: 'Extraction failed' });
+    res.json({ success: true, status: 'processing' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// --- Plan Endpoint ---
-router.post('/plan', async (req, res) => {
+async function processRun(runId: string) {
+  const run = dbService.getRun(runId);
+  if (!run) return;
+
   try {
-    const { timezone, goal } = req.body;
-    
-    if (!timezone) {
-      return res.status(400).json({ error: 'Timezone required' });
+    // 1. Legibility Check
+    const dietFiles = run.uploads.filter((u: any) => u.category === 'diet');
+    const metricsFiles = run.uploads.filter((u: any) => u.category === 'metrics');
+
+    if (dietFiles.length === 0 || metricsFiles.length === 0) {
+      throw new Error("Missing required files");
     }
 
-    // Get latest diet template
-    const diet = dbService.getLatestDietTemplate();
-    if (!diet) {
-      return res.status(400).json({ error: 'No diet template found. Please upload one first.' });
+    // Check Diet Legibility
+    // Assuming first file for now, or check all.
+    const dietPaths = dietFiles.map((u: any) => u.storagePath);
+    const dietLegibility = await checkLegibility(dietPaths, dietFiles[0].mimeType);
+
+    if (!dietLegibility.passed) {
+      dbService.updateRun(runId, { 
+        status: 'needs_reupload', 
+        extraction: { ...run.extraction, legibilityReport: dietLegibility },
+        issues: [`Diet file issue: ${dietLegibility.reason}`]
+      });
+      return;
     }
 
-    // Get today's metrics
-    const today = DateTime.now().setZone(timezone).toISODate();
-    const metrics = dbService.getDailyMetrics(today);
-    
-    // If no metrics for today, we might want to warn or use defaults
-    // For now, proceed with empty metrics if missing, but ideally we block
-    
-    const plan = await generatePlan(diet, metrics || {}, goal || { mode: 'maintenance' }, timezone);
-    
-    // Save plan
-    const tomorrow = DateTime.now().setZone(timezone).plus({ days: 1 }).toISODate();
-    dbService.savePlan(crypto.randomUUID(), tomorrow, plan);
+    // 2. Extraction
+    const dietTemplate = await extractDiet(dietPaths, dietFiles[0].mimeType);
+    const metricsPaths = metricsFiles.map((u: any) => u.storagePath);
+    const dailyMetrics = await extractMetrics(metricsPaths, metricsFiles[0].mimeType);
+
+    dbService.updateRun(runId, {
+      status: 'ready_for_review',
+      extraction: {
+        dietTemplate,
+        dailyMetrics,
+        legibilityReport: dietLegibility
+      }
+    });
+
+  } catch (error: any) {
+    console.error("Processing Logic Error:", error);
+    dbService.updateRun(runId, { status: 'failed', issues: [error.message] });
+  }
+}
+
+router.patch('/runs/:runId/dietTemplate', (req, res) => {
+  try {
+    const { runId } = req.params;
+    const { dietTemplate } = req.body;
+    const run = dbService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    dbService.updateRun(runId, {
+      extraction: { ...run.extraction, dietTemplate }
+    });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/runs/:runId/plan', async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const run = dbService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    const plan = await generatePlan(
+      run.extraction.dietTemplate, 
+      run.extraction.dailyMetrics, 
+      { mode: 'maintenance' }, // Default goal
+      run.timezone
+    );
+
+    dbService.updateRun(runId, {
+      status: 'planned',
+      plan
+    });
 
     res.json(plan);
-  } catch (error) {
-    console.error('Plan generation error:', error);
-    res.status(500).json({ error: 'Plan generation failed' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// --- Actions Endpoint ---
-router.post('/actions', async (req, res) => {
+router.post('/runs/:runId/actions', async (req, res) => {
   try {
-    const { plan } = req.body;
-    const actions = await generateNavigatorActions(plan);
+    const { runId } = req.params;
+    const run = dbService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    const actions = await generateNavigatorActions(run.plan);
+
+    dbService.updateRun(runId, {
+      status: 'actions_ready',
+      actions
+    });
+
     res.json(actions);
-  } catch (error) {
-    console.error('Actions generation error:', error);
-    res.status(500).json({ error: 'Actions generation failed' });
-  }
-});
-
-// --- Get Data Endpoint ---
-router.get('/data', async (req, res) => {
-  try {
-    const diet = dbService.getLatestDietTemplate();
-    const today = DateTime.now().setZone(req.query.timezone as string || 'UTC').toISODate();
-    const metrics = dbService.getDailyMetrics(today);
-    
-    res.json({ diet, metrics });
-  } catch (error) {
-    console.error('Get data error:', error);
-    res.status(500).json({ error: 'Failed to fetch data' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
