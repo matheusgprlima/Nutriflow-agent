@@ -129,7 +129,10 @@ export function attachWs(server: Server) {
               onAudio: (data) => send(ws, { type: 'live_audio', payload: { data } }),
               onInputTranscript: (text) => send(ws, { type: 'live_input_transcript', payload: { text } }),
               onOutputTranscript: (text) => send(ws, { type: 'live_output_transcript', payload: { text } }),
-              onTurnComplete: () => send(ws, { type: 'live_turn_complete' }),
+              onTurnComplete: () => {
+                console.log('[ws] turnComplete → sending live_turn_complete to client');
+                send(ws, { type: 'live_turn_complete' });
+              },
               onInterrupted: () => send(ws, { type: 'live_interrupted' }),
               onError: (message) => {
                 console.error('[ws] Live session error:', message);
@@ -153,6 +156,7 @@ export function attachWs(server: Server) {
                     ) as AdjustedDiet;
 
                     if (result?.meals?.length) {
+                      console.log('[ws] Tool success: sending adjusted_diet + respondToTool');
                       send(ws, { type: 'adjusted_diet', payload: result });
                       const totalItems = result.meals.reduce((n: number, m: any) => n + (m.items?.length || 0), 0);
                       const changedItems = result.meals.flatMap((m: any) => m.items || []).filter((it: any) => it.previousQuantity != null && it.previousQuantity !== it.quantity).length;

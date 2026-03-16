@@ -117,15 +117,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             setState((s) => ({ ...s, healthScreenshotCount: 0, healthFileNames: [] }));
             break;
           case 'adjusted_diet':
-            console.log('[ctx] adjusted_diet received, liveActive=', state.liveActive);
-            setState((s) => ({
-              ...s,
-              adjustedDiet: msg.payload,
-              liveGenerating: false,
-              planReady: true,
-              status: s.liveActive ? 'live' : 'done',
-              logs: [...s.logs, 'Daily plan ready'],
-            }));
+            setState((s) => {
+              console.log('[ctx] adjusted_diet received | liveActive=', s.liveActive, 'status=', s.status);
+              return {
+                ...s,
+                adjustedDiet: msg.payload,
+                liveGenerating: false,
+                planReady: true,
+                status: s.liveActive ? 'live' : 'done',
+                logs: [...s.logs, 'Daily plan ready'],
+              };
+            });
             break;
 
           // Live session messages
@@ -174,34 +176,40 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             setState((s) => ({ ...s, agentSpeaking: false }));
             break;
           case 'live_turn_complete':
-            setState((s) => ({
-              ...s,
-              agentSpeaking: false,
-              closingDone: s.planReady ? true : s.closingDone,
-            }));
+            setState((s) => {
+              const closing = s.planReady ? true : s.closingDone;
+              console.log('[ctx] live_turn_complete | planReady=', s.planReady, '→ closingDone=', closing);
+              return { ...s, agentSpeaking: false, closingDone: closing };
+            });
             break;
           case 'live_error':
-            console.error('[ctx] live_error:', msg.payload.message);
+            console.error('[ctx] live_error:', msg.payload.message, '| planReady=', state.planReady);
             clearLiveTimeout();
             setState((s) => ({
               ...s,
               liveActive: false,
               agentSpeaking: false,
               liveGenerating: false,
+              closingDone: s.planReady ? true : s.closingDone,
               status: s.adjustedDiet ? 'done' : 'ready',
               errorMessage: msg.payload.message,
             }));
             break;
           case 'live_ended':
-            console.log('[ctx] live_ended');
             clearLiveTimeout();
-            setState((s) => ({
-              ...s,
-              liveActive: false,
-              agentSpeaking: false,
-              liveGenerating: false,
-              status: s.adjustedDiet ? 'done' : (s.status === 'live_connecting' ? 'ready' : (s.status === 'live' ? 'ready' : s.status)),
-            }));
+            setState((s) => {
+              const hasResult = !!s.adjustedDiet;
+              const forceClosing = s.planReady && !s.closingDone;
+              console.log('[ctx] live_ended | adjustedDiet=', hasResult, 'planReady=', s.planReady, 'closingDone=', s.closingDone, '→ forceClosing=', forceClosing);
+              return {
+                ...s,
+                liveActive: false,
+                agentSpeaking: false,
+                liveGenerating: false,
+                closingDone: s.planReady ? true : s.closingDone,
+                status: hasResult ? 'done' : (s.status === 'live_connecting' ? 'ready' : (s.status === 'live' ? 'ready' : s.status)),
+              };
+            });
             break;
 
           default:

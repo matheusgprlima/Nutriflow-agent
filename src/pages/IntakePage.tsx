@@ -40,34 +40,40 @@ export default function IntakePage() {
 
   const isLiveConnecting = state.status === 'live_connecting';
 
-  // Auto-redirect: when plan is ready and NOT in active live, go to results
+  // Text-mode redirect: immediate when status=done and no live session context.
+  // The closingDone guard prevents this from racing with the live closing timer.
   useEffect(() => {
-    if (state.adjustedDiet && state.status === 'done') {
+    if (state.adjustedDiet && state.status === 'done' && !state.closingDone && state.liveTranscript.length === 0) {
+      console.log('[intake] text-mode redirect → /results');
       navigate('/results');
     }
-  }, [state.adjustedDiet, state.status, navigate]);
+  }, [state.adjustedDiet, state.status, state.closingDone, state.liveTranscript.length, navigate]);
 
-  // turnComplete-based redirect: Gemini signals it finished speaking.
-  // When closingDone is true, the agent has delivered its full closing.
-  // Wait 2s so the user can absorb the last words, then redirect.
+  // Live-mode redirect: 2s buffer after closingDone is set.
+  // closingDone is set by either live_turn_complete (agent finished speaking)
+  // or live_ended (session closed with plan ready). Either way, give 2s buffer.
+  // Does NOT depend on liveActive — that's the key fix.
   useEffect(() => {
-    if (!state.closingDone || !state.liveActive) return;
+    if (!state.closingDone) return;
     if (closingTimerRef.current) return;
+    console.log('[intake] closingDone=true → starting 2s redirect timer');
     closingTimerRef.current = setTimeout(() => {
       closingTimerRef.current = null;
+      console.log('[intake] 2s timer fired → navigating to /results');
       navigate('/results');
     }, 2000);
-  }, [state.closingDone, state.liveActive, navigate]);
+  }, [state.closingDone, navigate]);
 
-  // Failsafe: 25s max wait after plan is ready, in case turnComplete never arrives
+  // Failsafe: 30s max wait after plan ready in live context
   useEffect(() => {
-    if (state.planReady && state.liveActive && !maxNavTimerRef.current) {
+    if (state.planReady && state.liveTranscript.length > 0 && !maxNavTimerRef.current) {
       maxNavTimerRef.current = setTimeout(() => {
         maxNavTimerRef.current = null;
+        console.log('[intake] 30s failsafe timer → navigating to /results');
         navigate('/results');
-      }, 25000);
+      }, 30000);
     }
-  }, [state.planReady, state.liveActive, navigate]);
+  }, [state.planReady, state.liveTranscript.length, navigate]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -236,7 +242,10 @@ export default function IntakePage() {
   const diet = state.extractedDiet;
   const totalItems = diet?.meals?.reduce((n, m) => n + (m.items?.length ?? 0), 0) ?? 0;
 
-  const liveSessionEnded = !state.liveActive && !isLiveConnecting && state.liveTranscript.length > 0 && !state.planReady;
+  const liveSessionEnded = !state.liveActive && !isLiveConnecting && state.liveTranscript.length > 0 && !state.planReady && !state.closingDone;
+
+  // Transitional state: live session ended but plan exists, redirect pending
+  const showClosingTransition = state.closingDone && !state.liveActive;
 
   return (
     <Layout>
@@ -325,7 +334,7 @@ export default function IntakePage() {
           <SectionHeader step={3} done={state.liveTranscript.length > 0 || hasContext} label="Talk to your agent" required />
 
           {/* Mode toggle */}
-          {!state.liveActive && !isLiveConnecting && !liveSessionEnded && (
+          {!state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
             <div className="flex gap-2">
               <button
                 onClick={() => setMode('live')}
@@ -343,7 +352,7 @@ export default function IntakePage() {
           )}
 
           {/* === Start button === */}
-          {mode === 'live' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
+          {mode === 'live' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
             <div className="text-center py-4 space-y-4">
               <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your day and generate your adjusted plan.</p>
               <Button
@@ -466,7 +475,37 @@ export default function IntakePage() {
             </div>
           )}
 
-          {/* Session ended but transcript preserved */}
+          {/* Post-session closing transition: plan ready, session ended, redirect pending */}
+          {showClosingTransition && (
+            <div className="space-y-4">
+              <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-5 h-5 text-primary shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-white">Your daily plan is ready</p>
+                    <p className="text-xs text-gray-400">Taking you to the dashboard…</p>
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
+                  View now
+                </Button>
+              </div>
+              {state.liveTranscript.length > 0 && (
+                <div className="bg-black/30 rounded-xl p-4 max-h-[200px] overflow-y-auto space-y-3 opacity-60">
+                  {state.liveTranscript.map((turn, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
+                        {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
+                      </div>
+                      <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Session ended without plan — can restart */}
           {liveSessionEnded && (
             <div className="space-y-4">
               <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between">
@@ -481,7 +520,6 @@ export default function IntakePage() {
                   </button>
                 </div>
               </div>
-              {/* Show preserved transcript */}
               <div className="bg-black/30 rounded-xl p-4 max-h-[200px] overflow-y-auto space-y-3 opacity-70">
                 {state.liveTranscript.map((turn, i) => (
                   <div key={i} className="flex items-start gap-2">
@@ -496,7 +534,7 @@ export default function IntakePage() {
           )}
 
           {/* === Text fallback mode === */}
-          {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
+          {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
             <div className="space-y-3">
               <p className="text-sm text-gray-500">Describe your routine, training schedule, and eating patterns for today.</p>
               <textarea
@@ -510,7 +548,7 @@ export default function IntakePage() {
         </GlassCard>
 
         {/* ====== Text-mode CTA ====== */}
-        {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
+        {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
           <div className="pt-2 pb-8">
             <Button
               size="lg"
