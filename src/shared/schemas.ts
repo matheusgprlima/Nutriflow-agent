@@ -95,6 +95,7 @@ export type SessionState = {
   liveActive: boolean;
   agentSpeaking: boolean;
   planReady: boolean;
+  closingDone: boolean;
   liveGenerating?: boolean;
 };
 
@@ -130,5 +131,6 @@ export type ServerWsMessage =
   | { type: 'live_input_transcript'; payload: { text: string } }
   | { type: 'live_output_transcript'; payload: { text: string } }
   | { type: 'live_interrupted' }
+  | { type: 'live_turn_complete' }
   | { type: 'live_error'; payload: { message: string } }
   | { type: 'live_ended' };

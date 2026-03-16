@@ -129,6 +129,7 @@ export function attachWs(server: Server) {
               onAudio: (data) => send(ws, { type: 'live_audio', payload: { data } }),
               onInputTranscript: (text) => send(ws, { type: 'live_input_transcript', payload: { text } }),
               onOutputTranscript: (text) => send(ws, { type: 'live_output_transcript', payload: { text } }),
+              onTurnComplete: () => send(ws, { type: 'live_turn_complete' }),
               onInterrupted: () => send(ws, { type: 'live_interrupted' }),
               onError: (message) => {
                 console.error('[ws] Live session error:', message);
@@ -153,18 +154,21 @@ export function attachWs(server: Server) {
 
                     if (result?.meals?.length) {
                       send(ws, { type: 'adjusted_diet', payload: result });
+                      const totalItems = result.meals.reduce((n: number, m: any) => n + (m.items?.length || 0), 0);
+                      const changedItems = result.meals.flatMap((m: any) => m.items || []).filter((it: any) => it.previousQuantity != null && it.previousQuantity !== it.quantity).length;
                       live.respondToTool(id, name, {
-                        success: true,
+                        status: 'success',
                         meals_adjusted: result.meals.length,
-                        items_changed: result.meals.flatMap((m: any) => m.items || []).filter((it: any) => it.previousQuantity != null && it.previousQuantity !== it.quantity).length,
-                        instruction: 'The adjusted daily plan has been generated successfully. Now deliver your closing message. In your closing you MUST: (1) Briefly summarize what you understood from the conversation — mention specifics like training day vs rest day, energy level, stress, or sleep the user mentioned. (2) Mention that you adjusted the daily portions while keeping the same baseline foods. (3) If health/activity data was provided, mention it was factored in. (4) Tell the user: "Your results are ready. You will see the full dashboard with your adjusted plan, nutrition analytics, and a PDF download option." (5) End warmly like a coach wrapping up. Take your time — do NOT rush this closing. It is the most important part of the conversation.',
+                        total_items: totalItems,
+                        items_with_changes: changedItems,
+                        summary: `Adjusted ${changedItems} of ${totalItems} food items across ${result.meals.length} meals. The dashboard is ready for the user.`,
                       });
                     } else {
-                      live.respondToTool(id, name, { success: false, message: 'The plan could not be generated. Apologize briefly and suggest the user try again or use text mode.' });
+                      live.respondToTool(id, name, { status: 'failed', reason: 'Could not generate adjusted plan. Apologize briefly and suggest the user try again.' });
                     }
                   } catch (err) {
                     logError('live:tool:generate', err instanceof Error ? err : new Error(String(err)));
-                    live.respondToTool(id, name, { success: false, message: 'Generation failed. Apologize briefly and suggest the user try the text input mode instead.' });
+                    live.respondToTool(id, name, { status: 'failed', reason: 'Generation encountered an error. Apologize and suggest the user try again.' });
                   }
                 }
               },

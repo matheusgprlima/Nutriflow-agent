@@ -24,6 +24,7 @@ const initialState: SessionState = {
   liveActive: false,
   agentSpeaking: false,
   planReady: false,
+  closingDone: false,
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -135,7 +136,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             break;
           case 'live_audio':
             window.dispatchEvent(new CustomEvent('nutriflow:live_audio', { detail: { data: msg.payload.data } }));
-            setState((s) => ({ ...s, agentSpeaking: true }));
+            setState((s) => s.agentSpeaking ? s : { ...s, agentSpeaking: true });
             break;
           case 'live_input_transcript': {
             const text = msg.payload.text;
@@ -148,7 +149,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
                 } else {
                   turns.push({ role: 'user', text });
                 }
-                return { ...s, liveTranscript: turns };
+                return { ...s, liveTranscript: turns, agentSpeaking: false };
               });
             }
             break;
@@ -171,6 +172,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           }
           case 'live_interrupted':
             setState((s) => ({ ...s, agentSpeaking: false }));
+            break;
+          case 'live_turn_complete':
+            setState((s) => ({
+              ...s,
+              agentSpeaking: false,
+              closingDone: s.planReady ? true : s.closingDone,
+            }));
             break;
           case 'live_error':
             console.error('[ctx] live_error:', msg.payload.message);
@@ -261,7 +269,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const startLive = useCallback(() => {
     console.log('[ctx] startLive called');
     clearLiveTimeout();
-    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false, planReady: false, liveGenerating: false }));
+    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false, planReady: false, closingDone: false, liveGenerating: false }));
     send({ type: 'start_live' });
 
     liveTimeoutRef.current = setTimeout(() => {

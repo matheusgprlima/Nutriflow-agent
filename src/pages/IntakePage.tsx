@@ -35,7 +35,7 @@ export default function IntakePage() {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
 
-  const speechNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isLiveConnecting = state.status === 'live_connecting';
@@ -47,27 +47,25 @@ export default function IntakePage() {
     }
   }, [state.adjustedDiet, state.status, navigate]);
 
-  // Speech-aware auto-redirect during live session.
-  // Debounces on transcript activity — every new transcript chunk resets
-  // a 3.5s silence timer. Redirect fires only after the agent stops
-  // speaking for 3.5 seconds, giving the closing speech time to finish.
+  // turnComplete-based redirect: Gemini signals it finished speaking.
+  // When closingDone is true, the agent has delivered its full closing.
+  // Wait 2s so the user can absorb the last words, then redirect.
   useEffect(() => {
-    if (!state.planReady || !state.liveActive) return;
-
-    if (speechNavTimerRef.current) clearTimeout(speechNavTimerRef.current);
-    speechNavTimerRef.current = setTimeout(() => {
-      speechNavTimerRef.current = null;
+    if (!state.closingDone || !state.liveActive) return;
+    if (closingTimerRef.current) return;
+    closingTimerRef.current = setTimeout(() => {
+      closingTimerRef.current = null;
       navigate('/results');
-    }, 3500);
-  }, [state.planReady, state.liveActive, state.liveTranscript.length, navigate]);
+    }, 2000);
+  }, [state.closingDone, state.liveActive, navigate]);
 
-  // Absolute max wait (20s) after plan is ready — failsafe if speech detection stalls
+  // Failsafe: 25s max wait after plan is ready, in case turnComplete never arrives
   useEffect(() => {
     if (state.planReady && state.liveActive && !maxNavTimerRef.current) {
       maxNavTimerRef.current = setTimeout(() => {
         maxNavTimerRef.current = null;
         navigate('/results');
-      }, 20000);
+      }, 25000);
     }
   }, [state.planReady, state.liveActive, navigate]);
 
@@ -101,7 +99,7 @@ export default function IntakePage() {
     return () => {
       stopMic();
       playbackCtxRef.current?.close();
-      if (speechNavTimerRef.current) clearTimeout(speechNavTimerRef.current);
+      if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
       if (maxNavTimerRef.current) clearTimeout(maxNavTimerRef.current);
     };
   }, []);
@@ -372,14 +370,14 @@ export default function IntakePage() {
           {/* Active live session */}
           {state.liveActive && (
             <div className="space-y-4">
-              {/* Plan ready overlay */}
-              {state.planReady && (
-                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3">
+              {/* Plan ready + closing done — about to redirect */}
+              {state.closingDone && (
+                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-pulse">
                   <div className="flex items-center gap-3">
                     <CheckCircle className="w-5 h-5 text-primary shrink-0" />
                     <div>
                       <p className="text-sm font-medium text-white">Your daily plan is ready</p>
-                      <p className="text-xs text-gray-400">Listening to the agent's summary… you'll be redirected shortly.</p>
+                      <p className="text-xs text-gray-400">Taking you to the dashboard…</p>
                     </div>
                   </div>
                   <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
@@ -388,21 +386,43 @@ export default function IntakePage() {
                 </div>
               )}
 
-              {/* Generating indicator */}
+              {/* Plan ready but agent still delivering closing */}
+              {state.planReady && !state.closingDone && (
+                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle className="w-5 h-5 text-primary shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-white">Your daily plan is ready</p>
+                      <p className="text-xs text-gray-400">Listening to the agent's summary…</p>
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
+                    View now
+                  </Button>
+                </div>
+              )}
+
+              {/* Generating indicator — agent called tool, waiting for result */}
               {state.liveGenerating && !state.planReady && (
                 <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center gap-3">
                   <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
-                  <p className="text-xs text-gray-400">The agent is generating your adjusted plan…</p>
+                  <p className="text-xs text-gray-400">Preparing your adjusted plan… this takes a few seconds.</p>
                 </div>
               )}
 
               {/* Status bar */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                  <span className="text-xs text-primary font-medium">Live session active</span>
-                  {micActive && <span className="text-xs text-gray-500 flex items-center gap-1"><Mic className="w-3 h-3" /> Mic on</span>}
-                  {state.agentSpeaking && <span className="text-xs text-accent flex items-center gap-1"><Volume2 className="w-3 h-3 animate-pulse" /> Agent speaking</span>}
+                  <span className={`w-2 h-2 rounded-full ${state.agentSpeaking ? 'bg-accent' : 'bg-primary'} animate-pulse`} />
+                  <span className="text-xs text-primary font-medium">
+                    {state.agentSpeaking ? 'Agent speaking' : 'Listening'}
+                  </span>
+                  {micActive && !state.agentSpeaking && (
+                    <span className="text-xs text-gray-500 flex items-center gap-1"><Mic className="w-3 h-3" /> Mic on</span>
+                  )}
+                  {state.agentSpeaking && (
+                    <span className="text-xs text-accent/70 flex items-center gap-1"><Volume2 className="w-3 h-3 animate-pulse" /></span>
+                  )}
                 </div>
                 <button
                   onClick={handleEndLive}
