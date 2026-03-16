@@ -1,154 +1,107 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { 
-  DietTemplateSchema, 
-  DailyMetricsSchema, 
-  BioImpedanceSchema, 
-  TomorrowPlanSchema, 
-  UiActionsSchema 
-} from "../../src/shared/schemas.js"; // Note: .js extension for ESM in Node
-import { z } from "zod";
+import { logError } from "./logger.js";
 
-// Lazy initialization to ensure environment variables are loaded
+const VISION_MODEL = "gemini-2.5-flash";
+
 let ai: GoogleGenAI | null = null;
 
-const getAi = () => {
+const getAi = (): GoogleGenAI | null => {
   if (!ai) {
-    const key = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    const key = (process.env.GEMINI_API_KEY || process.env.API_KEY)?.trim();
     if (!key) {
-      console.error("CRITICAL: GEMINI_API_KEY (or API_KEY) is missing in environment variables.");
-      throw new Error("GEMINI_API_KEY is not configured.");
+      console.warn("GEMINI_API_KEY (or API_KEY) is not set.");
+      return null;
     }
-    console.log(`Gemini Service initialized lazily with key: '${key.substring(0, 5)}...${key.substring(key.length - 5)}' (Length: ${key.length})`);
     ai = new GoogleGenAI({ apiKey: key });
   }
   return ai;
 };
 
-// Helper to get model
-const getModel = (modelName: string = "gemini-flash-lite-latest") => {
-  return getAi().models;
+const getModels = () => {
+  const client = getAi();
+  if (!client) throw new Error("GEMINI_API_KEY is not configured.");
+  return client.models;
 };
 
-// --- Prompts ---
+const DIET_EXTRACTION_PROMPT = `You are a precision diet-plan OCR and nutrition estimation system.
 
-const DIET_EXTRACTION_PROMPT = `
-Extract the diet plan from the provided image.
-CRITICAL RULES:
-1. Identify all meals and their items.
-2. Extract quantities and units precisely (g, ml, units).
-3. If a range is given (e.g., 100-150g), set min and max.
-4. DO NOT hallucinate foods not present.
-5. If the image is not a diet plan, return low confidence.
-`;
+TASK: Extract every meal and food item from the provided image or document, and estimate macronutrients.
 
-const METRICS_EXTRACTION_PROMPT = `
-Extract health metrics from the provided image (Apple Watch, Health app, etc.).
-CRITICAL RULES:
-1. Extract steps, calories, sleep, heart rate.
-2. Identify the date if visible.
-3. If multiple days are shown, extract the MOST RECENT completed day.
-4. DO NOT hallucinate values.
-`;
+EXTRACTION RULES:
+1. Extract ALL meals — breakfast, mid-morning snack, lunch, afternoon snack, dinner, supper, pre-workout, post-workout, etc. Use the exact meal names from the document.
+2. For each item: exact food name, quantity, and unit (g | ml | serving | unit).
+3. If a range is given (e.g. "100-150g"), set minQuantity and maxQuantity and use the midpoint for baseQuantity.
+4. If the document shows day-type variants (e.g. "cardio day" vs "rest day" or "Dia A / Dia B"), list them as separate meals prefixed with the variant name (e.g. "Dia A — Breakfast").
+5. If the document shows "OR" substitution options within a meal, pick the first option as the item and add the alternative in a parenthetical note in the foodName.
+6. Preserve the document's language for food names — do NOT translate.
+7. Do NOT invent foods that are not in the document.
 
-const BIOIMPEDANCE_EXTRACTION_PROMPT = `
-Extract bioimpedance data from the report.
-CRITICAL RULES:
-1. Extract weight, body fat %, lean mass.
-2. Identify the date of the scan.
-`;
+MACRO ESTIMATION:
+8. For each food item, estimate macronutrients using common nutritional databases: estimatedCalories (kcal), estimatedProteinG, estimatedCarbsG, estimatedFatG. Base estimates on the extracted baseQuantity and unit.
+9. If a food is ambiguous (e.g. generic "meat"), use a reasonable default.
 
-const PLAN_GENERATION_PROMPT = `
-You are a Diet Execution Coach.
-Your goal is to adjust TOMORROW's diet quantities based on TODAY's metrics and the original plan.
+CONFIDENCE:
+10. Set confidence 0-1 for overall extraction quality. Set requiresUserConfirmation=true if anything is ambiguous or partially legible.
+11. Return extractionWarnings for items that were hard to read or where macro estimates are very uncertain.`;
+
+const ADJUSTED_DIET_PROMPT = `You are a daily diet planning adjuster. You do NOT give medical or nutritional advice. You do NOT recommend supplements or medication.
+
+TASK: Adjust a diet's daily quantities to better fit the user's routine and activity level. This is DAILY PLANNING — you are not replacing the diet, only tuning portions for the day.
 
 INPUTS:
-- Original Diet Plan (Allowed foods)
-- Daily Metrics (Activity, Sleep, etc.)
-- Goal (Deficit/Surplus)
+1. Current extracted diet (meals with items, quantities, and estimated macros).
+2. User's transcript describing routine, schedule, training, stress, energy levels.
+3. (Optional) Health/activity screenshots from a smartwatch or health app — if present, use visible data (steps, calories burned, active minutes, heart rate, sleep) to inform adjustments.
 
-CRITICAL HARD RULES:
-1. NEVER suggest new foods. ONLY adjust quantities of existing items.
-2. If activity was HIGH, you may slightly increase carbs/protein if goal permits.
-3. If sleep was POOR, suggest maintenance or slight reduction to avoid stress.
-4. Respect the goal (Deficit = strict, Surplus = generous).
-5. Output the plan for TOMORROW.
-6. Use the user's timezone for date calculation.
+CONSTRAINTS:
+- Keep the EXACT same foods and meal structure. Do NOT add or remove foods.
+- Only change quantities (up or down) based on routine and activity context.
+- Each adjusted item MUST include previousQuantity (original baseQuantity) and quantity (adjusted).
+- Each adjusted item MUST include estimated macros (estimatedCalories, estimatedProteinG, estimatedCarbsG, estimatedFatG) for the ADJUSTED quantity.
+- If no change is needed for an item, keep quantity === previousQuantity but still include it with macros.
+- Include concise neutral notes explaining major adjustments.
+- Surface uncertainty — if the transcript is vague or health data is unclear, note it instead of guessing.
 
-OUTPUT:
-- A structured JSON plan for tomorrow.
-- A summary of changes.
-- Warnings if metrics are concerning (e.g., very low sleep).
-`;
+OUTPUT: { meals: [...], notes: [...] }`;
 
-const NAVIGATOR_ACTIONS_PROMPT = `
-Generate a list of UI actions to input this diet plan into a tracking app.
-Assume a generic tracking app interface.
-- "click" on meal add buttons.
-- "type" food names and quantities.
-- "submit" to save.
-`;
-
-const LEGIBILITY_CHECK_PROMPT = `
-Analyze the provided images/documents for legibility for a diet and health tracking agent.
-We need to extract:
-1. Diet Plan: Meal names, food items, quantities.
-2. Health Metrics: Steps, calories, sleep data.
-3. Bioimpedance: Weight, body fat %.
-
-OUTPUT JSON ONLY:
-{
-  "category": "diet" | "metrics" | "bioimpedance" | "training",
-  "passed": boolean,
-  "reason": "string explanation",
-  "suggestions": ["string suggestion 1", "string suggestion 2"],
-  "confidence": number (0-1)
-}
-
-Fail if:
-- Text is too blurry to read numbers.
-- Glare obscures critical data.
-- The document is unrelated.
-`;
-
-// ... existing prompts ...
-
-// --- Service Methods ---
-
-export async function checkLegibility(imagePaths: string[], mimeType: string) {
-  const fs = await import("fs");
-  const parts: any[] = [];
-  
-  for (const path of imagePaths) {
-    const fileData = fs.readFileSync(path).toString("base64");
-    parts.push({ inlineData: { mimeType, data: fileData } });
-  }
-  parts.push({ text: LEGIBILITY_CHECK_PROMPT });
-
-  const response = await getModel().generateContent({
-    model: "gemini-flash-lite-latest",
-    contents: { parts },
-    config: {
-      responseMimeType: "application/json",
+function parseJsonResponse(response: any, context: string): any {
+  try {
+    let text = "";
+    if (response?.response) {
+      if (typeof response.response.text === "function") text = response.response.text();
+      else if (Array.isArray(response.response.candidates)) {
+        const parts = response.response.candidates[0]?.content?.parts || [];
+        text = parts.map((p: any) => p.text ?? "").join("");
+      }
     }
-  });
-
-  return JSON.parse(response.text || "{}");
+    if (!text && typeof response?.text === "string") text = response.text;
+    if (!text) {
+      logError(`gemini:${context}`, new Error("Empty response from model"));
+      return {};
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    logError(`gemini:parse:${context}`, err instanceof Error ? err : new Error(String(err)));
+    return {};
+  }
 }
 
-export async function extractDiet(imagePaths: string | string[], mimeType: string) {
-  const paths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
-  const fs = await import("fs");
-  
-  const parts: any[] = [];
-  for (const path of paths) {
-    const fileData = fs.readFileSync(path).toString("base64");
-    parts.push({ inlineData: { mimeType, data: fileData } });
-  }
-  parts.push({ text: DIET_EXTRACTION_PROMPT });
+const macroProps = {
+  estimatedCalories: { type: Type.NUMBER },
+  estimatedProteinG: { type: Type.NUMBER },
+  estimatedCarbsG: { type: Type.NUMBER },
+  estimatedFatG: { type: Type.NUMBER },
+};
 
-  const response = await getModel().generateContent({
-    model: "gemini-flash-lite-latest",
-    contents: { parts },
+export async function extractDietFromBuffer(base64: string, mimeType: string) {
+  const response = await getModels().generateContent({
+    model: VISION_MODEL,
+    contents: {
+      parts: [
+        { inlineData: { mimeType, data: base64 } },
+        { text: DIET_EXTRACTION_PROMPT },
+      ],
+    },
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -169,96 +122,83 @@ export async function extractDiet(imagePaths: string | string[], mimeType: strin
                       unit: { type: Type.STRING, enum: ["g", "ml", "serving", "unit"] },
                       baseQuantity: { type: Type.NUMBER },
                       minQuantity: { type: Type.NUMBER },
-                      maxQuantity: { type: Type.NUMBER }
+                      maxQuantity: { type: Type.NUMBER },
+                      ...macroProps,
                     },
-                    required: ["foodName", "unit", "baseQuantity"]
-                  }
-                }
+                    required: ["foodName", "unit", "baseQuantity"],
+                  },
+                },
               },
-              required: ["name", "items"]
-            }
-          },
-          constraints: {
-            type: Type.OBJECT,
-            properties: { forbiddenNewFoods: { type: Type.BOOLEAN } },
-            required: ["forbiddenNewFoods"]
+              required: ["name", "items"],
+            },
           },
           confidence: { type: Type.NUMBER },
           requiresUserConfirmation: { type: Type.BOOLEAN },
-          extractionWarnings: { type: Type.ARRAY, items: { type: Type.STRING } }
+          extractionWarnings: { type: Type.ARRAY, items: { type: Type.STRING } },
         },
-        required: ["meals", "confidence", "requiresUserConfirmation", "extractionWarnings"]
-      }
-    }
+        required: ["meals", "confidence", "requiresUserConfirmation", "extractionWarnings"],
+      },
+    },
   });
 
-  return JSON.parse(response.text || "{}");
+  return parseJsonResponse(response, "extractDiet");
 }
 
-export async function extractMetrics(imagePaths: string | string[], mimeType: string) {
-  const paths = Array.isArray(imagePaths) ? imagePaths : [imagePaths];
-  const fs = await import("fs");
+export async function generateAdjustedDiet(
+  extractedDiet: any,
+  transcript: string,
+  healthImages?: Array<{ base64: string; mimeType: string }>,
+) {
+  const dietCompact = JSON.stringify(extractedDiet);
+  const textContent = `Current diet (JSON):\n${dietCompact}\n\nUser routine / context:\n${transcript}\n\n${ADJUSTED_DIET_PROMPT}`;
 
   const parts: any[] = [];
-  for (const path of paths) {
-    const fileData = fs.readFileSync(path).toString("base64");
-    parts.push({ inlineData: { mimeType, data: fileData } });
+  if (healthImages?.length) {
+    for (const img of healthImages) {
+      parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+    }
   }
-  parts.push({ text: METRICS_EXTRACTION_PROMPT });
+  parts.push({ text: textContent });
 
-  const response = await getModel().generateContent({
-    model: "gemini-flash-lite-latest",
+  const response = await getModels().generateContent({
+    model: VISION_MODEL,
     contents: { parts },
     config: {
       responseMimeType: "application/json",
-      // We can use loose schema or strict. Let's use loose for now to avoid complexity in this snippet
-      // but ideally we map to DailyMetricsSchema.
-    }
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          meals: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                items: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      foodName: { type: Type.STRING },
+                      unit: { type: Type.STRING },
+                      quantity: { type: Type.NUMBER },
+                      previousQuantity: { type: Type.NUMBER },
+                      note: { type: Type.STRING },
+                      ...macroProps,
+                    },
+                    required: ["foodName", "unit", "quantity", "previousQuantity"],
+                  },
+                },
+              },
+              required: ["name", "items"],
+            },
+          },
+          notes: { type: Type.ARRAY, items: { type: Type.STRING } },
+        },
+        required: ["meals", "notes"],
+      },
+    },
   });
 
-  return JSON.parse(response.text || "{}");
-}
-
-export async function generatePlan(
-  diet: any,
-  metrics: any,
-  goal: any,
-  userTimezone: string
-) {
-  const prompt = `
-    User Timezone: ${userTimezone}
-    Diet: ${JSON.stringify(diet)}
-    Metrics: ${JSON.stringify(metrics)}
-    Goal: ${JSON.stringify(goal)}
-    
-    ${PLAN_GENERATION_PROMPT}
-  `;
-
-  const response = await getModel().generateContent({
-    model: "gemini-flash-lite-latest",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      // Schema matching TomorrowPlanSchema
-    }
-  });
-
-  return JSON.parse(response.text || "{}");
-}
-
-export async function generateNavigatorActions(plan: any) {
-  const prompt = `
-    Plan: ${JSON.stringify(plan)}
-    ${NAVIGATOR_ACTIONS_PROMPT}
-  `;
-
-  const response = await getModel().generateContent({
-    model: "gemini-flash-lite-latest",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-    }
-  });
-
-  return JSON.parse(response.text || "{}");
+  return parseJsonResponse(response, "generateAdjustedDiet");
 }
