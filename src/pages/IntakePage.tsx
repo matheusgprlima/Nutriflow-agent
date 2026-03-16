@@ -4,7 +4,7 @@ import { GlassCard } from '../components/ui/GlassCard';
 import { Button } from '../components/ui/Button';
 import {
   FileText, Loader2, AlertCircle, Check, Mic, Square, Watch,
-  Upload, X, Sparkles, ChevronDown, PhoneCall, PhoneOff, MessageSquare, Volume2, User, Bot,
+  Upload, X, Sparkles, ChevronDown, PhoneCall, PhoneOff, MessageSquare, Volume2, User, Bot, RefreshCw,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSession } from '../context/SessionContext';
@@ -22,18 +22,19 @@ export default function IntakePage() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const [mode, setMode] = useState<'live' | 'text'>('live');
-  const [micActive, setMicActive] = useState(false);
   const [liveTextInput, setLiveTextInput] = useState('');
-  const [liveConnecting, setLiveConnecting] = useState(false);
 
   // Audio capture refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const [micActive, setMicActive] = useState(false);
 
   // Audio playback refs
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
+
+  const isLiveConnecting = state.status === 'live_connecting';
 
   useEffect(() => {
     if (state.adjustedDiet && state.status === 'done') navigate('/results');
@@ -71,11 +72,6 @@ export default function IntakePage() {
       playbackCtxRef.current?.close();
     };
   }, []);
-
-  // When live is ready after connecting
-  useEffect(() => {
-    if (state.liveActive) setLiveConnecting(false);
-  }, [state.liveActive]);
 
   const playAudioChunk = useCallback((base64: string) => {
     if (!playbackCtxRef.current) {
@@ -122,7 +118,6 @@ export default function IntakePage() {
         const input = e.inputBuffer.getChannelData(0);
         const inputRate = ctx.sampleRate;
 
-        // Downsample to 16kHz
         let samples: Float32Array;
         if (inputRate === targetRate) {
           samples = input;
@@ -138,13 +133,11 @@ export default function IntakePage() {
           }
         }
 
-        // Float32 → Int16
         const int16 = new Int16Array(samples.length);
         for (let i = 0; i < samples.length; i++) {
           int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768)));
         }
 
-        // Int16 → Base64
         const bytes = new Uint8Array(int16.buffer);
         let binary = '';
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -172,7 +165,6 @@ export default function IntakePage() {
   };
 
   const handleStartLive = () => {
-    setLiveConnecting(true);
     startLive();
   };
 
@@ -222,9 +214,19 @@ export default function IntakePage() {
         </div>
 
         {state.errorMessage && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center gap-3 text-red-200 text-sm">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            {state.errorMessage}
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 text-red-200 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p>{state.errorMessage}</p>
+              {state.status === 'ready' && mode === 'live' && (
+                <button
+                  onClick={handleStartLive}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-red-300 hover:text-white transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" /> Try again
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -288,7 +290,7 @@ export default function IntakePage() {
           <SectionHeader step={3} done={state.liveTranscript.length > 0 || hasContext} label="Talk to your agent" required />
 
           {/* Mode toggle */}
-          {!state.liveActive && (
+          {!state.liveActive && !isLiveConnecting && (
             <div className="flex gap-2">
               <button
                 onClick={() => setMode('live')}
@@ -306,7 +308,7 @@ export default function IntakePage() {
           )}
 
           {/* === Live conversation mode === */}
-          {mode === 'live' && !state.liveActive && !liveConnecting && (
+          {mode === 'live' && !state.liveActive && !isLiveConnecting && (
             <div className="text-center py-4 space-y-4">
               <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your routine and generate your daily plan.</p>
               <Button
@@ -321,10 +323,11 @@ export default function IntakePage() {
             </div>
           )}
 
-          {liveConnecting && !state.liveActive && (
-            <div className="text-center py-6 space-y-2">
+          {isLiveConnecting && (
+            <div className="text-center py-6 space-y-3">
               <Loader2 className="w-6 h-6 text-primary animate-spin mx-auto" />
-              <p className="text-sm text-gray-400">Connecting to agent…</p>
+              <p className="text-sm text-gray-400">Connecting to live agent…</p>
+              <p className="text-xs text-gray-600">This may take a few seconds</p>
             </div>
           )}
 
@@ -353,7 +356,7 @@ export default function IntakePage() {
                   <p className="text-sm text-gray-600 italic text-center">Speak naturally — the agent is listening…</p>
                 )}
                 {state.liveTranscript.map((turn, i) => (
-                  <div key={i} className={`flex items-start gap-2 ${turn.role === 'user' ? '' : ''}`}>
+                  <div key={i} className="flex items-start gap-2">
                     <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
                       {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
                     </div>
@@ -382,7 +385,7 @@ export default function IntakePage() {
           )}
 
           {/* === Text fallback mode === */}
-          {mode === 'text' && !state.liveActive && (
+          {mode === 'text' && !state.liveActive && !isLiveConnecting && (
             <div className="space-y-3">
               <p className="text-sm text-gray-500">Describe your routine, training, and eating patterns.</p>
               <textarea
@@ -396,7 +399,7 @@ export default function IntakePage() {
         </GlassCard>
 
         {/* ====== Text-mode CTA ====== */}
-        {mode === 'text' && !state.liveActive && (
+        {mode === 'text' && !state.liveActive && !isLiveConnecting && (
           <div className="pt-2 pb-8">
             <Button
               size="lg"

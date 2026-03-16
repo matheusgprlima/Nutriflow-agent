@@ -77,7 +77,8 @@ export type SessionStatus =
   | 'generating'
   | 'done'
   | 'error'
-  | 'live';
+  | 'live'
+  | 'live_connecting';
 
 export type SessionState = {
   fileName?: string;

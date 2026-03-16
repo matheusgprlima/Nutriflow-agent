@@ -37,6 +37,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const transcriptRef = useRef('');
   const pendingRef = useRef<ClientWsMessage[]>([]);
+  const liveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const flushPending = useCallback((ws: WebSocket) => {
     while (pendingRef.current.length > 0) {
@@ -45,20 +46,37 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const clearLiveTimeout = useCallback(() => {
+    if (liveTimeoutRef.current) {
+      clearTimeout(liveTimeoutRef.current);
+      liveTimeoutRef.current = null;
+    }
+  }, []);
+
   const ensureConnected = useCallback((): WebSocket => {
     const existing = wsRef.current;
     if (existing && existing.readyState === WebSocket.OPEN) return existing;
     if (existing && existing.readyState === WebSocket.CONNECTING) return existing;
 
+    console.log('[ctx] Opening WS to', getWsUrl());
     const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {
+      console.log('[ctx] WS connected');
       setState((s) => ({ ...s, logs: [...s.logs, 'Connected'] }));
       flushPending(ws);
     };
-    ws.onclose = () => setState((s) => ({ ...s, logs: [...s.logs, 'Disconnected'], liveActive: false }));
-    ws.onerror = () => setState((s) => ({ ...s, status: 'error', errorMessage: 'Connection error' }));
+    ws.onclose = () => {
+      console.log('[ctx] WS disconnected');
+      clearLiveTimeout();
+      setState((s) => ({ ...s, logs: [...s.logs, 'Disconnected'], liveActive: false, status: s.status === 'live' || s.status === 'live_connecting' ? 'ready' : s.status }));
+    };
+    ws.onerror = () => {
+      console.error('[ctx] WS error');
+      clearLiveTimeout();
+      setState((s) => ({ ...s, status: 'error', errorMessage: 'Connection error', liveActive: false }));
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -89,10 +107,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
           // Live session messages
           case 'live_ready':
-            setState((s) => ({ ...s, liveActive: true, status: 'live', logs: [...s.logs, 'Live session started'] }));
+            console.log('[ctx] live_ready received');
+            clearLiveTimeout();
+            setState((s) => ({ ...s, liveActive: true, status: 'live', errorMessage: null, logs: [...s.logs, 'Live session started'] }));
             break;
           case 'live_audio':
-            // Audio is handled by the IntakePage audio playback system via a custom event
             window.dispatchEvent(new CustomEvent('nutriflow:live_audio', { detail: { data: msg.payload.data } }));
             setState((s) => ({ ...s, agentSpeaking: true }));
             break;
@@ -132,10 +151,25 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             setState((s) => ({ ...s, agentSpeaking: false }));
             break;
           case 'live_error':
-            setState((s) => ({ ...s, liveActive: false, errorMessage: msg.payload.message }));
+            console.error('[ctx] live_error:', msg.payload.message);
+            clearLiveTimeout();
+            setState((s) => ({
+              ...s,
+              liveActive: false,
+              agentSpeaking: false,
+              status: 'ready',
+              errorMessage: msg.payload.message,
+            }));
             break;
           case 'live_ended':
-            setState((s) => ({ ...s, liveActive: false, agentSpeaking: false, status: s.adjustedDiet ? 'done' : 'ready' }));
+            console.log('[ctx] live_ended');
+            clearLiveTimeout();
+            setState((s) => ({
+              ...s,
+              liveActive: false,
+              agentSpeaking: false,
+              status: s.adjustedDiet ? 'done' : s.status === 'live_connecting' ? 'ready' : (s.status === 'live' ? 'ready' : s.status),
+            }));
             break;
 
           default:
@@ -144,12 +178,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             }
         }
       } catch (e) {
-        console.error('[WS msg]', e);
+        console.error('[ctx] WS msg parse error:', e);
       }
     };
 
     return ws;
-  }, [flushPending]);
+  }, [flushPending, clearLiveTimeout]);
 
   const send = useCallback((message: ClientWsMessage) => {
     const ws = ensureConnected();
@@ -201,9 +235,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [send]);
 
   const startLive = useCallback(() => {
-    setState((s) => ({ ...s, errorMessage: null, liveTranscript: [], agentSpeaking: false }));
+    console.log('[ctx] startLive called');
+    clearLiveTimeout();
+    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false }));
     send({ type: 'start_live' });
-  }, [send]);
+
+    liveTimeoutRef.current = setTimeout(() => {
+      console.error('[ctx] Client-side live connection timeout (20s)');
+      setState((s) => {
+        if (s.status === 'live_connecting') {
+          return { ...s, status: 'ready', errorMessage: 'Live agent connection timed out. Try again or use text mode.' };
+        }
+        return s;
+      });
+    }, 20000);
+  }, [send, clearLiveTimeout]);
 
   const sendAudioChunk = useCallback((base64: string) => {
     send({ type: 'audio_chunk', payload: { data: base64 } });
@@ -218,15 +264,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [send]);
 
   const endLive = useCallback(() => {
+    clearLiveTimeout();
     send({ type: 'end_live' });
-  }, [send]);
+  }, [send, clearLiveTimeout]);
 
   const reset = useCallback(() => {
+    clearLiveTimeout();
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     transcriptRef.current = '';
     pendingRef.current = [];
     setState(initialState);
-  }, []);
+  }, [clearLiveTimeout]);
 
   const value: SessionContextValue = {
     state, sendDietFile, setTranscript, addHealthScreenshot,

@@ -1,7 +1,11 @@
 import WebSocket from 'ws';
 import { logError } from './logger.js';
 
-const LIVE_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
+const LIVE_MODELS = [
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-2.5-flash-native-audio-preview-09-2025',
+  'gemini-2.0-flash-live-001',
+];
 const LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
 export type LiveCallbacks = {
@@ -18,7 +22,7 @@ export type LiveCallbacks = {
 export class GeminiLiveSession {
   private ws: WebSocket | null = null;
   private cb: LiveCallbacks;
-  private setupResolve: (() => void) | null = null;
+  private connected = false;
 
   constructor(cb: LiveCallbacks) {
     this.cb = cb;
@@ -28,21 +32,56 @@ export class GeminiLiveSession {
     const key = (process.env.GEMINI_API_KEY || process.env.API_KEY)?.trim();
     if (!key) throw new Error('GEMINI_API_KEY not set');
 
+    const errors: string[] = [];
+    for (const model of LIVE_MODELS) {
+      try {
+        console.log(`[live] Trying model: ${model}`);
+        await this.tryConnect(key, model, systemInstruction, tools);
+        console.log(`[live] Connected with model: ${model}`);
+        return;
+      } catch (err: any) {
+        console.warn(`[live] Model ${model} failed: ${err.message}`);
+        errors.push(`${model}: ${err.message}`);
+        try { this.ws?.close(); } catch {}
+        this.ws = null;
+        this.connected = false;
+      }
+    }
+    throw new Error(`All live models failed. ${errors.join(' | ')}`);
+  }
+
+  private tryConnect(key: string, model: string, systemInstruction: string, tools: any[]): Promise<void> {
     const url = `${LIVE_ENDPOINT}?key=${key}`;
 
     return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      this.connected = false;
       const ws = new WebSocket(url);
       this.ws = ws;
 
+      const settle = (ok: boolean, err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (ok) {
+          this.connected = true;
+          resolve();
+        } else {
+          reject(err || new Error('Unknown'));
+        }
+      };
+
       const timeout = setTimeout(() => {
-        reject(new Error('Live session connection timed out'));
-        ws.close();
-      }, 15000);
+        console.error(`[live] Connection timed out for model ${model}`);
+        settle(false, new Error(`Timeout connecting with ${model}`));
+        try { ws.close(); } catch {}
+      }, 12000);
 
       ws.on('open', () => {
+        console.log(`[live] WS open, sending setup for model: ${model}`);
         const setup: any = {
           setup: {
-            model: `models/${LIVE_MODEL}`,
+            model: `models/${model}`,
             generationConfig: {
               responseModalities: ['AUDIO'],
             },
@@ -57,40 +96,52 @@ export class GeminiLiveSession {
           setup.setup.tools = [{ functionDeclarations: tools }];
         }
         ws.send(JSON.stringify(setup));
-        this.setupResolve = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
       });
 
       ws.on('message', (raw: Buffer | string) => {
         try {
           const msg = JSON.parse(raw.toString());
-          this.handleMessage(msg);
+
+          if (msg.error) {
+            const errMsg = msg.error.message || `Gemini error ${msg.error.code || ''}`;
+            console.error(`[live] Gemini error: ${errMsg}`);
+            if (!settled) {
+              settle(false, new Error(errMsg));
+              try { ws.close(); } catch {}
+              return;
+            }
+            this.cb.onError(errMsg);
+            try { ws.close(); } catch {}
+            return;
+          }
+
+          this.handleMessage(msg, () => settle(true));
         } catch (e) {
           logError('gemini-live:parse', e instanceof Error ? e : new Error(String(e)));
         }
       });
 
       ws.on('error', (err) => {
-        clearTimeout(timeout);
-        logError('gemini-live:ws-error', err);
-        this.cb.onError('Live session connection failed');
-        reject(err);
+        console.error(`[live] WS error:`, err.message);
+        settle(false, err);
       });
 
-      ws.on('close', () => {
-        clearTimeout(timeout);
-        this.cb.onClose();
+      ws.on('close', (code, reason) => {
+        console.log(`[live] WS closed: code=${code} reason=${reason?.toString() || 'none'} connected=${this.connected}`);
+        if (!settled) {
+          settle(false, new Error(`WS closed before setup: code ${code}`));
+        } else if (this.connected) {
+          this.cb.onClose();
+        }
       });
     });
   }
 
-  private handleMessage(msg: any) {
+  private handleMessage(msg: any, onSetup: () => void) {
     if (msg.setupComplete != null) {
+      console.log('[live] setupComplete received');
       this.cb.onReady();
-      this.setupResolve?.();
-      this.setupResolve = null;
+      onSetup();
       return;
     }
 

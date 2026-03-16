@@ -26,6 +26,7 @@ export function attachWs(server: Server) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws: WebSocket) => {
+    console.log('[ws] Client connected');
     const session: Session = { extractedDiet: null, transcript: '', healthScreenshots: [], liveSession: null };
 
     ws.on('message', async (raw: Buffer | string) => {
@@ -104,7 +105,9 @@ export function attachWs(server: Server) {
           // ========== Live session handlers ==========
 
           case 'start_live': {
+            console.log('[ws] start_live received');
             if (!session.extractedDiet) {
+              console.log('[ws] No diet extracted, rejecting start_live');
               send(ws, { type: 'live_error', payload: { message: 'Upload your diet first.' } });
               return;
             }
@@ -119,20 +122,29 @@ export function attachWs(server: Server) {
             );
 
             const live = new GeminiLiveSession({
-              onReady: () => send(ws, { type: 'live_ready' }),
+              onReady: () => {
+                console.log('[ws] Live session ready, sending live_ready to client');
+                send(ws, { type: 'live_ready' });
+              },
               onAudio: (data) => send(ws, { type: 'live_audio', payload: { data } }),
               onInputTranscript: (text) => send(ws, { type: 'live_input_transcript', payload: { text } }),
               onOutputTranscript: (text) => send(ws, { type: 'live_output_transcript', payload: { text } }),
               onInterrupted: () => send(ws, { type: 'live_interrupted' }),
-              onError: (message) => send(ws, { type: 'live_error', payload: { message } }),
+              onError: (message) => {
+                console.error('[ws] Live session error:', message);
+                send(ws, { type: 'live_error', payload: { message } });
+              },
               onClose: () => {
+                console.log('[ws] Live session closed');
                 session.liveSession = null;
                 send(ws, { type: 'live_ended' });
               },
               onToolCall: async (name, id, args) => {
+                console.log(`[ws] Tool call: ${name}`, args);
                 if (name === 'generate_adjusted_plan') {
                   try {
                     const routineSummary = args.routine_summary || 'No specific routine provided.';
+                    send(ws, { type: 'progress', payload: { step: 'generating', detail: 'Agent is generating your plan…' } });
                     const result = await generateAdjustedDiet(
                       session.extractedDiet!,
                       routineSummary,
@@ -154,11 +166,14 @@ export function attachWs(server: Server) {
             });
 
             try {
+              console.log('[ws] Connecting to Gemini Live...');
               await live.connect(sysInstruction, [PLAN_TOOL_DECLARATION]);
               session.liveSession = live;
-            } catch (err) {
+              console.log('[ws] Gemini Live connected and assigned to session');
+            } catch (err: any) {
+              console.error('[ws] Live connect failed:', err.message);
               logError('live:connect', err instanceof Error ? err : new Error(String(err)));
-              send(ws, { type: 'live_error', payload: { message: 'Could not start live session. Try the text input instead.' } });
+              send(ws, { type: 'live_error', payload: { message: `Could not start live agent: ${err.message}. Use text mode instead.` } });
             }
             return;
           }
@@ -178,6 +193,7 @@ export function attachWs(server: Server) {
           }
 
           case 'end_live': {
+            console.log('[ws] end_live received');
             if (session.liveSession) {
               session.liveSession.close();
               session.liveSession = null;
@@ -196,6 +212,7 @@ export function attachWs(server: Server) {
     });
 
     ws.on('close', () => {
+      console.log('[ws] Client disconnected');
       if (session.liveSession) {
         session.liveSession.close();
         session.liveSession = null;
