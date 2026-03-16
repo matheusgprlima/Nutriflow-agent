@@ -82,7 +82,10 @@ export class GeminiLiveSession {
       }, 12000);
 
       ws.on('open', () => {
-        console.log(`[live] WS open, sending setup for model: ${model}`);
+        console.log(`[live] WS open, sending setup for model: ${model}`, {
+          hasTools: tools.length > 0,
+          toolNames: tools.map((t: any) => t?.name),
+        });
         const setup: any = {
           setup: {
             model: `models/${model}`,
@@ -99,6 +102,7 @@ export class GeminiLiveSession {
         if (tools.length > 0) {
           setup.setup.tools = [{ functionDeclarations: tools }];
         }
+        console.log('[live] setup payload', JSON.stringify(setup));
         ws.send(JSON.stringify(setup));
       });
 
@@ -144,6 +148,7 @@ export class GeminiLiveSession {
   }
 
   private handleMessage(msg: any, onSetup: () => void) {
+    console.log('[live] inbound message keys', Object.keys(msg));
     if (msg.setupComplete != null) {
       console.log('[live] setupComplete received');
       this.cb.onReady();
@@ -153,6 +158,7 @@ export class GeminiLiveSession {
 
     if (msg.serverContent) {
       const sc = msg.serverContent;
+      console.log('[live] serverContent keys', Object.keys(sc));
       const hasAudio = Array.isArray(sc.modelTurn?.parts)
         ? sc.modelTurn.parts.some((part: any) => !!part.inlineData?.data)
         : false;
@@ -201,9 +207,11 @@ export class GeminiLiveSession {
       }
     }
 
-    if (msg.toolCall?.functionCalls) {
-      for (const fc of msg.toolCall.functionCalls) {
-        console.log(`[live] toolCall received: ${fc.name}:${fc.id}`);
+    if (msg.toolCall || msg.toolCalls) {
+      const calls = msg.toolCall?.functionCalls || msg.toolCalls?.functionCalls || [];
+      console.log('[live] raw toolCall payload', JSON.stringify(msg.toolCall || msg.toolCalls || {}));
+      for (const fc of calls) {
+        console.log(`[live] toolCall received: ${fc.name}:${fc.id}`, fc.args || {});
         this.cb.onToolCall(fc.name, fc.id, fc.args || {});
       }
     }
@@ -333,10 +341,13 @@ export const PLAN_TOOL_DECLARATION = {
   name: 'generate_adjusted_plan',
   description: 'Generates the final adjusted daily diet plan based on the baseline diet and the routine context gathered from this conversation. Call this when you have enough information about the user\'s day.',
   parameters: {
-    type: 'OBJECT',
+    // IMPORTANT: Live API expects JSON Schema style, NOT the Type enum
+    // used by the non-live generateContent SDK. Using the wrong shape
+    // causes the server to reject tool usage with code 1008.
+    type: 'object',
     properties: {
       routine_summary: {
-        type: 'STRING',
+        type: 'string',
         description: 'A detailed summary of the user\'s routine, training, rest, stress, and eating patterns gathered from the conversation',
       },
     },
