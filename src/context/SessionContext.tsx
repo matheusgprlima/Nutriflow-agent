@@ -268,7 +268,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const generateAdjusted = useCallback(() => {
-    setState((s) => ({ ...s, status: 'generating', errorMessage: null }));
+    setState((s) => ({
+      ...s,
+      status: 'generating',
+      errorMessage: null,
+      adjustedDiet: null,
+      liveGenerating: false,
+    }));
     send({ type: 'transcript', payload: { text: transcriptRef.current } });
     send({ type: 'generate_adjusted' });
   }, [send]);
@@ -283,7 +289,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       console.error('[ctx] Client-side live connection timeout (20s)');
       setState((s) => {
         if (s.status === 'live_connecting') {
-          return { ...s, status: 'ready', errorMessage: 'Live agent connection timed out. Try again or use text mode.' };
+          return { ...s, status: 'ready', errorMessage: 'Live agent connection timed out. Try again.' };
         }
         return s;
       });

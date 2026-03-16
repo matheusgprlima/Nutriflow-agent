@@ -29,7 +29,7 @@ export type DietItem = z.infer<typeof DietItemSchema>;
 export type DietMeal = z.infer<typeof DietMealSchema>;
 export type ExtractedDiet = z.infer<typeof ExtractedDietSchema>;
 
-// --- Routine context (from transcript / audio) ---
+// --- Routine context (from text input, or live session when used) ---
 export const RoutineContextSchema = z.object({
   summary: z.string(),
   eatingLessWhen: z.array(z.string()).optional(),

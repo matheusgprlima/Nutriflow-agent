@@ -195,7 +195,7 @@ export function attachWs(server: Server) {
             } catch (err: any) {
               console.error('[ws] Live connect failed:', err.message);
               logError('live:connect', err instanceof Error ? err : new Error(String(err)));
-              send(ws, { type: 'live_error', payload: { message: `Could not start live agent: ${err.message}. Use text mode instead.` } });
+              send(ws, { type: 'live_error', payload: { message: `Could not start live agent: ${err.message}.` } });
             }
             return;
           }

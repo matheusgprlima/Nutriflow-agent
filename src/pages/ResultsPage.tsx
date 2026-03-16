@@ -241,7 +241,7 @@ function buildPdfHtml(state: any, adjustedMacros: any, baselineMacros: any): str
   const liveTranscriptText = state.liveTranscript?.length
     ? state.liveTranscript.map(t => `${t.role === 'user' ? 'You' : 'Agent'}: ${t.text}`).join('\n')
     : '';
-  const transcript = liveTranscriptText || state.transcript || 'Not provided';
+  const transcript = state.transcript || liveTranscriptText || 'Not provided';
 
   const mealRows = (diet?.meals || []).map((meal: any) =>
     `<div style="break-inside:avoid;margin-bottom:16px;">

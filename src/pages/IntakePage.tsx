@@ -1,11 +1,10 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Layout } from '../components/Layout';
 import { GlassCard } from '../components/ui/GlassCard';
 import { Button } from '../components/ui/Button';
 import {
-  FileText, Loader2, AlertCircle, Check, Mic, Watch,
-  Upload, X, Sparkles, ChevronDown, PhoneCall, PhoneOff, MessageSquare,
-  Volume2, User, Bot, RefreshCw, CheckCircle, ArrowRight,
+  FileText, Loader2, AlertCircle, Check, Watch,
+  Upload, X, Sparkles, ChevronDown,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSession } from '../context/SessionContext';
@@ -13,204 +12,22 @@ import { useSession } from '../context/SessionContext';
 export default function IntakePage() {
   const navigate = useNavigate();
   const {
-    state, sendDietFile, setTranscript,
-    addHealthScreenshot, clearHealthScreenshots, generateAdjusted,
-    startLive, sendAudioChunk, sendLiveText, endLive,
+    state,
+    sendDietFile,
+    setTranscript,
+    addHealthScreenshot,
+    clearHealthScreenshots,
+    generateAdjusted,
   } = useSession();
 
   const dietInputRef = useRef<HTMLInputElement>(null);
   const healthInputRef = useRef<HTMLInputElement>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
-  const [mode, setMode] = useState<'live' | 'text'>('live');
-  const [liveTextInput, setLiveTextInput] = useState('');
-
-  // Audio capture refs
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const [micActive, setMicActive] = useState(false);
-  const micSendEnabledRef = useRef(false);
-
-  // Audio playback refs
-  const playbackCtxRef = useRef<AudioContext | null>(null);
-  const nextPlayTimeRef = useRef(0);
-
-  const isLiveConnecting = state.status === 'live_connecting';
-
-  // Text-mode redirect: immediate when status=done and no live session was used.
   useEffect(() => {
-    if (state.adjustedDiet && state.status === 'done' && state.liveTranscript.length === 0) {
-      console.log('[intake] text-mode redirect → /results');
+    if (state.adjustedDiet && state.status === 'done') {
       navigate('/results');
     }
-  }, [state.adjustedDiet, state.status, state.liveTranscript.length, navigate]);
-
-  // Auto-scroll transcript
-  useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [state.liveTranscript]);
-
-  // Live audio playback listener
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const data = (e as CustomEvent).detail?.data;
-      if (data) playAudioChunk(data);
-    };
-    window.addEventListener('nutriflow:live_audio', handler);
-    return () => window.removeEventListener('nutriflow:live_audio', handler);
-  }, []);
-
-  // When live becomes active, start mic
-  useEffect(() => {
-    if (state.liveActive && !micActive) {
-      startMic();
-    }
-    if (!state.liveActive && micActive) {
-      stopMic();
-    }
-  }, [state.liveActive]);
-
-  // Keep the capture stream alive, but pause outbound audio whenever the
-  // agent is speaking or the plan is being generated/finalized. This prevents
-  // accidental barge-in and speaker-loopback from interrupting the post-tool turn.
-  useEffect(() => {
-    const enabled = state.liveActive && !state.agentSpeaking && !state.liveGenerating && !state.adjustedDiet;
-    if (micSendEnabledRef.current !== enabled) {
-      console.log('[intake] mic send enabled =', enabled, {
-        liveActive: state.liveActive,
-        agentSpeaking: state.agentSpeaking,
-        liveGenerating: state.liveGenerating,
-        adjustedDiet: !!state.adjustedDiet,
-      });
-      micSendEnabledRef.current = enabled;
-    }
-  }, [state.liveActive, state.agentSpeaking, state.liveGenerating, state.adjustedDiet]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopMic();
-      playbackCtxRef.current?.close();
-    };
-  }, []);
-
-  const playAudioChunk = useCallback((base64: string) => {
-    if (!playbackCtxRef.current) {
-      playbackCtxRef.current = new AudioContext({ sampleRate: 24000 });
-    }
-    const ctx = playbackCtxRef.current;
-    try {
-      const raw = atob(base64);
-      const bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      const int16 = new Int16Array(bytes.buffer);
-      const float32 = new Float32Array(int16.length);
-      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-
-      const buffer = ctx.createBuffer(1, float32.length, 24000);
-      buffer.getChannelData(0).set(float32);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-
-      const now = ctx.currentTime;
-      if (nextPlayTimeRef.current < now) nextPlayTimeRef.current = now + 0.05;
-      source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += buffer.duration;
-    } catch (e) {
-      console.error('Audio playback error:', e);
-    }
-  }, []);
-
-  const startMic = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      streamRef.current = stream;
-
-      const ctx = new AudioContext();
-      audioCtxRef.current = ctx;
-      const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      const targetRate = 16000;
-
-      processor.onaudioprocess = (e) => {
-        if (!micSendEnabledRef.current) return;
-        const input = e.inputBuffer.getChannelData(0);
-        const inputRate = ctx.sampleRate;
-
-        let samples: Float32Array;
-        if (inputRate === targetRate) {
-          samples = input;
-        } else {
-          const ratio = inputRate / targetRate;
-          const len = Math.floor(input.length / ratio);
-          samples = new Float32Array(len);
-          for (let i = 0; i < len; i++) {
-            const srcIdx = i * ratio;
-            const idx = Math.floor(srcIdx);
-            const frac = srcIdx - idx;
-            samples[i] = input[idx] * (1 - frac) + (input[idx + 1] || 0) * frac;
-          }
-        }
-
-        const int16 = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768)));
-        }
-
-        const bytes = new Uint8Array(int16.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const b64 = btoa(binary);
-
-        sendAudioChunk(b64);
-      };
-
-      source.connect(processor);
-      processor.connect(ctx.destination);
-      setMicActive(true);
-    } catch (e) {
-      console.error('Mic access failed:', e);
-    }
-  };
-
-  const stopMic = () => {
-    processorRef.current?.disconnect();
-    audioCtxRef.current?.close();
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    processorRef.current = null;
-    audioCtxRef.current = null;
-    streamRef.current = null;
-    micSendEnabledRef.current = false;
-    setMicActive(false);
-  };
-
-  const handleStartLive = () => {
-    startLive();
-  };
-
-  const handleEndLive = () => {
-    stopMic();
-    endLive();
-  };
-
-  const handleLiveTextSend = () => {
-    const text = liveTextInput.trim();
-    if (!text) return;
-    sendLiveText(text);
-    setLiveTextInput('');
-  };
+  }, [state.adjustedDiet, state.status, navigate]);
 
   const handleDietFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -221,7 +38,7 @@ export default function IntakePage() {
 
   const handleHealthFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
-    Array.from(e.target.files).forEach(f => addHealthScreenshot(f));
+    Array.from(e.target.files).forEach((file) => addHealthScreenshot(file));
     e.target.value = '';
   };
 
@@ -230,315 +47,171 @@ export default function IntakePage() {
   };
 
   const isExtracting = state.status === 'extracting';
-  const dietReady = !!state.extractedDiet?.meals?.length;
-  const hasContext = !!(state.transcript?.trim());
-  const canGenerate = dietReady && hasContext && state.status !== 'generating' && state.status !== 'extracting';
   const isGenerating = state.status === 'generating';
   const diet = state.extractedDiet;
-  const totalItems = diet?.meals?.reduce((n, m) => n + (m.items?.length ?? 0), 0) ?? 0;
-
-  const hasLiveHistory = state.liveTranscript.length > 0;
-  const liveDone = !state.liveActive && !isLiveConnecting && hasLiveHistory;
-  const planAvailable = !!state.adjustedDiet;
+  const dietReady = !!diet?.meals?.length;
+  const hasContext = !!state.transcript?.trim();
+  const canGenerate = dietReady && hasContext && !isExtracting && !isGenerating;
+  const totalItems = diet?.meals?.reduce((count, meal) => count + (meal.items?.length ?? 0), 0) ?? 0;
 
   return (
     <Layout>
       <div className="max-w-3xl mx-auto space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold text-white">Plan your day</h1>
-          <p className="text-gray-400">Upload your diet, talk to the agent, and get your adjusted daily plan.</p>
+          <h1 className="text-3xl font-bold text-white">Generate your daily adjusted plan</h1>
+          <p className="text-gray-400">
+            Upload your baseline diet, tell us about your day, and optionally add activity data.
+          </p>
         </div>
-
-        {/* Top banner — visible after session ends with plan ready, scrolled-up safety net */}
-        {planAvailable && liveDone && (
-          <div
-            className="bg-primary/10 border border-primary/30 rounded-2xl p-4 flex items-center justify-between gap-4 cursor-pointer hover:bg-primary/15 transition-colors"
-            onClick={() => navigate('/results')}
-          >
-            <div className="flex items-center gap-3">
-              <CheckCircle className="w-5 h-5 text-primary shrink-0" />
-              <p className="text-sm font-medium text-white">Your daily plan is ready — tap to view</p>
-            </div>
-            <ArrowRight className="w-4 h-4 text-primary shrink-0" />
-          </div>
-        )}
 
         {state.errorMessage && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 text-red-200 text-sm">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p>{state.errorMessage}</p>
-              {state.status === 'ready' && mode === 'live' && (
-                <button
-                  onClick={handleStartLive}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-red-300 hover:text-white transition-colors"
-                >
-                  <RefreshCw className="w-3 h-3" /> Try again
-                </button>
-              )}
-            </div>
+            <p>{state.errorMessage}</p>
           </div>
         )}
 
-        {/* ====== SECTION 1: Diet Upload ====== */}
         <GlassCard className="space-y-4">
-          <SectionHeader step={1} done={dietReady} label="Your baseline diet" required />
+          <SectionHeader step={1} done={dietReady} label="Upload your baseline diet" required />
           {dietReady ? (
-            <div className="bg-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div className="bg-white/5 rounded-xl p-4 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
                   <FileText className="w-5 h-5 text-primary" />
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-white truncate">{state.fileName || 'Diet uploaded'}</p>
-                  <p className="text-xs text-gray-500">{diet!.meals.length} meals · {totalItems} items · {((diet!.confidence ?? 0) * 100).toFixed(0)}% confidence</p>
+                  <p className="text-xs text-gray-500">
+                    {diet.meals.length} meals · {totalItems} items · {((diet.confidence ?? 0) * 100).toFixed(0)}% confidence
+                  </p>
                 </div>
               </div>
-              {!state.liveActive && !isLiveConnecting && (
-                <button onClick={() => dietInputRef.current?.click()} className="text-xs text-gray-400 hover:text-white transition-colors shrink-0">Replace</button>
-              )}
+              <button
+                onClick={() => dietInputRef.current?.click()}
+                className="text-xs text-gray-400 hover:text-white transition-colors shrink-0"
+              >
+                Replace
+              </button>
             </div>
           ) : (
             <div
-              className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-colors ${isExtracting ? 'border-primary/30 opacity-70 cursor-wait' : 'border-white/10 hover:border-primary/30 cursor-pointer'}`}
+              className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-colors ${
+                isExtracting
+                  ? 'border-primary/30 opacity-70 cursor-wait'
+                  : 'border-white/10 hover:border-primary/30 cursor-pointer'
+              }`}
               onClick={() => !isExtracting && dietInputRef.current?.click()}
             >
               {isExtracting ? (
-                <><Loader2 className="w-8 h-8 text-primary animate-spin mb-3" /><p className="text-sm text-gray-300">Extracting your diet…</p><p className="text-xs text-gray-500 mt-1">This takes about 10–20 seconds</p></>
+                <>
+                  <Loader2 className="w-8 h-8 text-primary animate-spin mb-3" />
+                  <p className="text-sm text-gray-300">Extracting your baseline diet…</p>
+                  <p className="text-xs text-gray-500 mt-1">This usually takes 10 to 20 seconds</p>
+                </>
               ) : (
-                <><Upload className="w-8 h-8 text-gray-500 mb-3" /><p className="text-sm text-white font-medium">Drop file or click to upload</p><p className="text-xs text-gray-500 mt-1">Image or PDF · max 20 MB</p></>
+                <>
+                  <Upload className="w-8 h-8 text-gray-500 mb-3" />
+                  <p className="text-sm text-white font-medium">Drop file or click to upload</p>
+                  <p className="text-xs text-gray-500 mt-1">Image or PDF · max 20 MB</p>
+                </>
               )}
             </div>
           )}
-          <input ref={dietInputRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleDietFile} disabled={isExtracting} />
-          {dietReady && diet!.extractionWarnings && diet!.extractionWarnings.length > 0 && (
-            <ExtractionNotes warnings={diet!.extractionWarnings} confidence={diet!.confidence} />
+          <input
+            ref={dietInputRef}
+            type="file"
+            accept="image/*,.pdf"
+            className="hidden"
+            onChange={handleDietFile}
+            disabled={isExtracting}
+          />
+          {dietReady && diet.extractionWarnings && diet.extractionWarnings.length > 0 && (
+            <ExtractionNotes warnings={diet.extractionWarnings} confidence={diet.confidence} />
           )}
         </GlassCard>
 
-        {/* ====== SECTION 2: Activity Data (Optional) ====== */}
         <GlassCard className="space-y-4">
-          <SectionHeader step={2} done={state.healthFileNames.length > 0} label="Activity & health data" optional />
-          <p className="text-sm text-gray-500">Add Apple Watch or health app screenshots for better planning accuracy.</p>
+          <SectionHeader step={2} done={hasContext} label="Tell us about your day" required />
+          <p className="text-sm text-gray-500">
+            Share the context that affects today&apos;s plan: training day or rest day, energy, sleep, stress,
+            appetite, and anything that changes your schedule.
+          </p>
+          <textarea
+            className="w-full min-h-[180px] rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 p-4 resize-y focus:outline-none focus:border-primary/50 text-sm"
+            placeholder="Example: Today is a training day and I&apos;m lifting at 6pm. Sleep was short, energy is medium, stress is high, and I&apos;ll be in meetings most of the afternoon. Appetite is lower than usual until after training."
+            value={state.transcript ?? ''}
+            onChange={handleTranscriptChange}
+          />
+          <p className="text-xs text-gray-600">
+            This is the main input for generating your adjusted daily plan.
+          </p>
+        </GlassCard>
+
+        <GlassCard className="space-y-4">
+          <SectionHeader step={3} done={state.healthFileNames.length > 0} label="Optionally add activity data" optional />
+          <p className="text-sm text-gray-500">
+            Add Apple Watch, smartwatch, or health app screenshots if you want extra context. This step is optional.
+          </p>
           <div
             className="border-2 border-dashed border-white/10 hover:border-accent/30 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-colors"
             onClick={() => healthInputRef.current?.click()}
           >
             <input ref={healthInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleHealthFiles} />
-            <Watch className="w-5 h-5 text-accent/50 mb-1" /><p className="text-sm text-gray-400">Add screenshots (up to 3)</p>
+            <Watch className="w-5 h-5 text-accent/50 mb-1" />
+            <p className="text-sm text-gray-400">Add screenshots (up to 3)</p>
           </div>
           {state.healthFileNames.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               {state.healthFileNames.map((name, i) => (
-                <span key={i} className="inline-flex items-center px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs truncate max-w-[160px]">{name}</span>
-              ))}
-              <button onClick={clearHealthScreenshots} className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"><X className="w-3 h-3" /> Clear</button>
-            </div>
-          )}
-        </GlassCard>
-
-        {/* ====== SECTION 3: Agent Conversation ====== */}
-        <GlassCard className="space-y-4" glowBorder={state.liveActive}>
-          <SectionHeader step={3} done={state.liveTranscript.length > 0 || hasContext} label="Talk to your agent" required />
-
-          {/* Mode toggle — only when no live session has started yet */}
-          {!state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => setMode('live')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${mode === 'live' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white'}`}
-              >
-                <PhoneCall className="w-3.5 h-3.5" /> Voice conversation
-              </button>
-              <button
-                onClick={() => setMode('text')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${mode === 'text' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white'}`}
-              >
-                <MessageSquare className="w-3.5 h-3.5" /> Text input
-              </button>
-            </div>
-          )}
-
-          {/* Start button — only when no live session has started yet */}
-          {mode === 'live' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
-            <div className="text-center py-4 space-y-4">
-              <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your day and generate your adjusted plan.</p>
-              <Button
-                onClick={handleStartLive}
-                disabled={!dietReady}
-                icon={<PhoneCall className="w-4 h-4" />}
-                className="mx-auto"
-              >
-                Start conversation
-              </Button>
-              {!dietReady && <p className="text-xs text-gray-600">Upload your diet first</p>}
-            </div>
-          )}
-
-          {/* Connecting spinner */}
-          {isLiveConnecting && (
-            <div className="text-center py-6 space-y-3">
-              <Loader2 className="w-6 h-6 text-primary animate-spin mx-auto" />
-              <p className="text-sm text-gray-400">Connecting to live agent…</p>
-              <p className="text-xs text-gray-600">This may take a few seconds</p>
-            </div>
-          )}
-
-          {/* Active live session */}
-          {state.liveActive && (
-            <div className="space-y-4">
-              {/* Status bar */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${state.agentSpeaking ? 'bg-accent' : 'bg-primary'} animate-pulse`} />
-                  <span className="text-xs font-medium text-gray-300">
-                    {state.agentSpeaking ? 'Agent speaking' : 'Listening'}
-                  </span>
-                  {micActive && !state.agentSpeaking && !planAvailable && (
-                    <span className="text-xs text-gray-500 flex items-center gap-1"><Mic className="w-3 h-3" /> Mic on</span>
-                  )}
-                  {state.agentSpeaking && (
-                    <span className="text-xs text-accent/70 flex items-center gap-1"><Volume2 className="w-3 h-3 animate-pulse" /></span>
-                  )}
-                </div>
-                <button
-                  onClick={handleEndLive}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20 transition-all"
+                <span
+                  key={i}
+                  className="inline-flex items-center px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs truncate max-w-[160px]"
                 >
-                  <PhoneOff className="w-3.5 h-3.5" /> End
-                </button>
-              </div>
-
-              {/* Transcript — dims when plan is ready so CTA draws the eye */}
-              <div className={`bg-black/30 rounded-xl p-4 overflow-y-auto space-y-3 transition-opacity ${planAvailable ? 'max-h-[180px] opacity-50' : 'max-h-[300px]'}`}>
-                {state.liveTranscript.length === 0 && (
-                  <p className="text-sm text-gray-600 italic text-center">Speak naturally — the agent is listening…</p>
-                )}
-                {state.liveTranscript.map((turn, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
-                      {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-gray-600 uppercase">{turn.role === 'user' ? 'You' : 'Agent'}</p>
-                      <p className={`text-sm ${turn.role === 'user' ? 'text-gray-300' : 'text-white'}`}>{turn.text}</p>
-                    </div>
-                  </div>
-                ))}
-                <div ref={transcriptEndRef} />
-              </div>
-
-              {/* Live text input — hidden once plan is ready */}
-              {!planAvailable && (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={liveTextInput}
-                    onChange={(e) => setLiveTextInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleLiveTextSend()}
-                    placeholder="Or type a message to the agent…"
-                    className="flex-1 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 px-4 py-2.5 text-sm focus:outline-none focus:border-primary/50"
-                  />
-                  <Button size="sm" onClick={handleLiveTextSend} disabled={!liveTextInput.trim()}>Send</Button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Post-session: session ended, show read-only transcript */}
-          {liveDone && (
-            <div className="space-y-4">
-              {!planAvailable && (
-                <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between">
-                  <p className="text-xs text-gray-400">Session ended. You can restart or switch to text mode.</p>
-                  <button
-                    onClick={handleStartLive}
-                    disabled={!dietReady}
-                    className="text-xs text-primary hover:text-white transition-colors flex items-center gap-1"
-                  >
-                    <RefreshCw className="w-3 h-3" /> Restart
-                  </button>
-                </div>
-              )}
-              <div className={`bg-black/30 rounded-xl p-4 max-h-[180px] overflow-y-auto space-y-3 transition-opacity ${planAvailable ? 'opacity-40' : 'opacity-70'}`}>
-                {state.liveTranscript.map((turn, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
-                      {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
-                    </div>
-                    <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Persistent live CTA — always visible during/after voice conversation */}
-          {mode === 'live' && (state.liveActive || isLiveConnecting || hasLiveHistory) && (
-            <div className="pt-3 mt-2 border-t border-white/5 space-y-3">
-              <LiveStatusLine
-                connecting={isLiveConnecting}
-                active={state.liveActive}
-                speaking={state.agentSpeaking}
-                generating={!!state.liveGenerating}
-                ready={planAvailable}
-              />
-              <Button
-                size="lg"
-                onClick={() => navigate('/results')}
-                disabled={!planAvailable}
-                isLoading={!!state.liveGenerating && !planAvailable}
-                icon={planAvailable ? <ArrowRight className="w-5 h-5" /> : undefined}
-                className="w-full py-4 text-base"
+                  {name}
+                </span>
+              ))}
+              <button
+                onClick={clearHealthScreenshots}
+                className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
-                {state.liveGenerating && !planAvailable
-                  ? 'Generating your daily plan…'
-                  : planAvailable
-                    ? 'Open your daily plan'
-                    : 'Waiting for your plan…'}
-              </Button>
-            </div>
-          )}
-
-          {/* Text fallback mode — only when no live session has been used */}
-          {mode === 'text' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
-            <div className="space-y-3">
-              <p className="text-sm text-gray-500">Describe your routine, training schedule, and eating patterns for today.</p>
-              <textarea
-                className="w-full min-h-[120px] rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 p-4 resize-y focus:outline-none focus:border-primary/50 text-sm"
-                placeholder="e.g. I train in the morning today, it's leg day. I slept well but I'm a bit stressed from work. I usually eat more on training days…"
-                value={state.transcript ?? ''}
-                onChange={handleTranscriptChange}
-              />
+                <X className="w-3 h-3" /> Clear
+              </button>
             </div>
           )}
         </GlassCard>
 
-        {/* ====== Text-mode CTA ====== */}
-        {mode === 'text' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
-          <div className="pt-2 pb-8">
-            <Button
-              size="lg"
-              onClick={generateAdjusted}
-              disabled={!canGenerate}
-              isLoading={isGenerating}
-              icon={!isGenerating ? <Sparkles className="w-5 h-5" /> : undefined}
-              className="w-full py-5 text-base"
-            >
-              {isGenerating ? 'Generating your daily plan…' : 'Generate daily plan'}
-            </Button>
-            {!dietReady && <p className="text-center text-xs text-gray-600 mt-3">Upload your diet to continue</p>}
-            {dietReady && !hasContext && <p className="text-center text-xs text-gray-600 mt-3">Add your routine context to generate</p>}
-          </div>
-        )}
+        <div className="pt-2 pb-8">
+          <Button
+            size="lg"
+            onClick={generateAdjusted}
+            disabled={!canGenerate}
+            isLoading={isGenerating}
+            icon={!isGenerating ? <Sparkles className="w-5 h-5" /> : undefined}
+            className="w-full py-5 text-base"
+          >
+            {isGenerating ? 'Generating your daily adjusted plan…' : 'Generate your daily adjusted plan'}
+          </Button>
+          {!dietReady && <p className="text-center text-xs text-gray-600 mt-3">Upload your baseline diet to continue.</p>}
+          {dietReady && !hasContext && <p className="text-center text-xs text-gray-600 mt-3">Tell us about your day to continue.</p>}
+        </div>
       </div>
     </Layout>
   );
 }
 
-/* ========== Sub-components ========== */
-
-function SectionHeader({ step, done, label, required, optional }: { step: number; done: boolean; label: string; required?: boolean; optional?: boolean }) {
+function SectionHeader({
+  step,
+  done,
+  label,
+  required,
+  optional,
+}: {
+  step: number;
+  done: boolean;
+  label: string;
+  required?: boolean;
+  optional?: boolean;
+}) {
   return (
     <div className="flex items-center gap-3">
       <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${done ? 'bg-primary text-black' : 'bg-white/10 text-gray-400'}`}>
@@ -547,49 +220,6 @@ function SectionHeader({ step, done, label, required, optional }: { step: number
       <h2 className="text-lg font-semibold text-white">{label}</h2>
       {required && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-300 uppercase tracking-wider">required</span>}
       {optional && <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-500 uppercase tracking-wider">optional</span>}
-    </div>
-  );
-}
-
-function LiveStatusLine({ connecting, active, speaking, generating, ready }: {
-  connecting: boolean; active: boolean; speaking: boolean; generating: boolean; ready: boolean;
-}) {
-  let icon: React.ReactNode;
-  let text: string;
-  let accent = 'text-gray-500';
-
-  if (ready && !active) {
-    icon = <CheckCircle className="w-3.5 h-3.5 text-primary" />;
-    text = 'Conversation complete — your plan is ready';
-    accent = 'text-primary';
-  } else if (ready && active) {
-    icon = <CheckCircle className="w-3.5 h-3.5 text-primary" />;
-    text = 'Your plan is ready — keep listening or open it now';
-    accent = 'text-primary';
-  } else if (generating) {
-    icon = <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />;
-    text = 'Preparing your daily plan…';
-    accent = 'text-gray-400';
-  } else if (connecting) {
-    icon = <Loader2 className="w-3.5 h-3.5 text-gray-500 animate-spin" />;
-    text = 'Connecting to your planning agent…';
-  } else if (active && speaking) {
-    icon = <Volume2 className="w-3.5 h-3.5 text-accent" />;
-    text = 'Agent is speaking';
-    accent = 'text-gray-400';
-  } else if (active) {
-    icon = <Mic className="w-3.5 h-3.5 text-primary" />;
-    text = 'Conversation in progress';
-    accent = 'text-gray-400';
-  } else {
-    icon = <PhoneOff className="w-3.5 h-3.5 text-gray-600" />;
-    text = 'Session ended';
-  }
-
-  return (
-    <div className={`flex items-center gap-2 text-xs ${accent}`}>
-      {icon}
-      <span>{text}</span>
     </div>
   );
 }
@@ -606,8 +236,8 @@ function ExtractionNotes({ warnings, confidence }: { warnings: string[]; confide
       </button>
       {open && (
         <div className="px-4 pb-3 space-y-1 text-xs text-gray-500">
-          {confidence != null && confidence < 0.7 && <p>Low confidence ({(confidence * 100).toFixed(0)}%) — some items may be inaccurate.</p>}
-          {warnings.map((w, i) => <p key={i}>{w}</p>)}
+          {confidence != null && confidence < 0.7 && <p>Low confidence ({(confidence * 100).toFixed(0)}%) - some items may be inaccurate.</p>}
+          {warnings.map((warning, i) => <p key={i}>{warning}</p>)}
         </div>
       )}
     </div>
