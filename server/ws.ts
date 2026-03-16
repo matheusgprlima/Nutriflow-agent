@@ -153,7 +153,12 @@ export function attachWs(server: Server) {
 
                     if (result?.meals?.length) {
                       send(ws, { type: 'adjusted_diet', payload: result });
-                      live.respondToTool(id, name, { success: true, message: 'The adjusted daily plan has been generated and sent to the user. Tell the user their plan is ready and they will be redirected to the results page momentarily. Keep it brief — one or two sentences.' });
+                      live.respondToTool(id, name, {
+                        success: true,
+                        meals_adjusted: result.meals.length,
+                        items_changed: result.meals.flatMap((m: any) => m.items || []).filter((it: any) => it.previousQuantity != null && it.previousQuantity !== it.quantity).length,
+                        instruction: 'The adjusted daily plan has been generated successfully. Now deliver your closing message. In your closing you MUST: (1) Briefly summarize what you understood from the conversation — mention specifics like training day vs rest day, energy level, stress, or sleep the user mentioned. (2) Mention that you adjusted the daily portions while keeping the same baseline foods. (3) If health/activity data was provided, mention it was factored in. (4) Tell the user: "Your results are ready. You will see the full dashboard with your adjusted plan, nutrition analytics, and a PDF download option." (5) End warmly like a coach wrapping up. Take your time — do NOT rush this closing. It is the most important part of the conversation.',
+                      });
                     } else {
                       live.respondToTool(id, name, { success: false, message: 'The plan could not be generated. Apologize briefly and suggest the user try again or use text mode.' });
                     }

@@ -35,7 +35,8 @@ export default function IntakePage() {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
 
-  const autoNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isLiveConnecting = state.status === 'live_connecting';
 
@@ -46,16 +47,28 @@ export default function IntakePage() {
     }
   }, [state.adjustedDiet, state.status, navigate]);
 
-  // Auto-redirect during live: when planReady, give agent time to say goodbye then navigate
+  // Speech-aware auto-redirect during live session.
+  // Debounces on transcript activity — every new transcript chunk resets
+  // a 3.5s silence timer. Redirect fires only after the agent stops
+  // speaking for 3.5 seconds, giving the closing speech time to finish.
   useEffect(() => {
-    if (state.planReady && state.liveActive) {
-      autoNavTimerRef.current = setTimeout(() => {
+    if (!state.planReady || !state.liveActive) return;
+
+    if (speechNavTimerRef.current) clearTimeout(speechNavTimerRef.current);
+    speechNavTimerRef.current = setTimeout(() => {
+      speechNavTimerRef.current = null;
+      navigate('/results');
+    }, 3500);
+  }, [state.planReady, state.liveActive, state.liveTranscript.length, navigate]);
+
+  // Absolute max wait (20s) after plan is ready — failsafe if speech detection stalls
+  useEffect(() => {
+    if (state.planReady && state.liveActive && !maxNavTimerRef.current) {
+      maxNavTimerRef.current = setTimeout(() => {
+        maxNavTimerRef.current = null;
         navigate('/results');
-      }, 6000);
+      }, 20000);
     }
-    return () => {
-      if (autoNavTimerRef.current) clearTimeout(autoNavTimerRef.current);
-    };
   }, [state.planReady, state.liveActive, navigate]);
 
   // Auto-scroll transcript
@@ -88,7 +101,8 @@ export default function IntakePage() {
     return () => {
       stopMic();
       playbackCtxRef.current?.close();
-      if (autoNavTimerRef.current) clearTimeout(autoNavTimerRef.current);
+      if (speechNavTimerRef.current) clearTimeout(speechNavTimerRef.current);
+      if (maxNavTimerRef.current) clearTimeout(maxNavTimerRef.current);
     };
   }, []);
 
@@ -360,12 +374,12 @@ export default function IntakePage() {
             <div className="space-y-4">
               {/* Plan ready overlay */}
               {state.planReady && (
-                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-in">
+                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <CheckCircle className="w-5 h-5 text-primary shrink-0" />
                     <div>
-                      <p className="text-sm font-medium text-white">Your daily plan is ready!</p>
-                      <p className="text-xs text-gray-400">Redirecting to results…</p>
+                      <p className="text-sm font-medium text-white">Your daily plan is ready</p>
+                      <p className="text-xs text-gray-400">Listening to the agent's summary… you'll be redirected shortly.</p>
                     </div>
                   </div>
                   <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
