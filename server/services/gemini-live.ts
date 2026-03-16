@@ -8,6 +8,15 @@ const LIVE_MODELS = [
 ];
 const LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
+const OUTBOUND_LOG_MAX = 5;
+type OutboundEntry = {
+  at: string;
+  kind: string;
+  keys: string[];
+  payloadShape: string;
+  state: { connected: boolean; awaitingPostToolTurn: boolean; postToolOutputStarted: boolean };
+};
+
 export type LiveCallbacks = {
   onReady: () => void;
   onAudio: (base64: string) => void;
@@ -27,9 +36,50 @@ export class GeminiLiveSession {
   private awaitingPostToolTurn = false;
   private postToolOutputStarted = false;
   private lastToolResponseMeta: { id: string; name: string } | null = null;
+  private outboundLog: OutboundEntry[] = [];
 
   constructor(cb: LiveCallbacks) {
     this.cb = cb;
+  }
+
+  /** Compact shape for logging: truncate base64 and long text. */
+  private static payloadShape(obj: any): string {
+    const s = JSON.stringify(obj, (_, v) => {
+      if (typeof v === 'string' && v.length > 120) return v.slice(0, 80) + `…[${v.length}]`;
+      if (typeof v === 'string' && /^[A-Za-z0-9+/=]+$/.test(v) && v.length > 60) return `[base64:${v.length}]`;
+      return v;
+    });
+    return s.length > 500 ? s.slice(0, 480) + '…' : s;
+  }
+
+  private recordAndSend(payload: object): void {
+    const keys = Object.keys(payload);
+    const kind = keys[0] || 'unknown';
+    const entry: OutboundEntry = {
+      at: new Date().toISOString(),
+      kind,
+      keys,
+      payloadShape: GeminiLiveSession.payloadShape(payload),
+      state: {
+        connected: this.connected,
+        awaitingPostToolTurn: this.awaitingPostToolTurn,
+        postToolOutputStarted: this.postToolOutputStarted,
+      },
+    };
+    this.outboundLog.push(entry);
+    if (this.outboundLog.length > OUTBOUND_LOG_MAX) this.outboundLog.shift();
+    console.log(`[live] OUTBOUND ${entry.at} kind=${kind} keys=[${keys.join(',')}]`, entry.payloadShape.slice(0, 300));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    }
+  }
+
+  private dumpLastOutbound(label: string): void {
+    console.log(`[live] ${label} — LAST ${this.outboundLog.length} OUTBOUND MESSAGES:`);
+    this.outboundLog.forEach((e, i) => {
+      console.log(`[live]   [${i + 1}] at=${e.at} kind=${e.kind} keys=[${e.keys.join(',')}] state=${JSON.stringify(e.state)}`);
+      console.log(`[live]       shape=${e.payloadShape.slice(0, 400)}`);
+    });
   }
 
   async connect(systemInstruction: string, tools: any[]): Promise<void> {
@@ -85,25 +135,22 @@ export class GeminiLiveSession {
         console.log(`[live] WS open, sending setup for model: ${model}`, {
           hasTools: tools.length > 0,
           toolNames: tools.map((t: any) => t?.name),
+          transcriptionConfig: process.env.LIVE_TRANSCRIPTION === '1',
         });
-        const setup: any = {
-          setup: {
-            model: `models/${model}`,
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-            },
-            systemInstruction: {
-              parts: [{ text: systemInstruction }],
-            },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
-          },
+        const setupInner: any = {
+          model: `models/${model}`,
+          generationConfig: { responseModalities: ['AUDIO'] },
+          systemInstruction: { parts: [{ text: systemInstruction }] },
         };
         if (tools.length > 0) {
-          setup.setup.tools = [{ functionDeclarations: tools }];
+          setupInner.tools = [{ functionDeclarations: tools }];
         }
-        console.log('[live] setup payload', JSON.stringify(setup));
-        ws.send(JSON.stringify(setup));
+        if (process.env.LIVE_TRANSCRIPTION === '1') {
+          setupInner.inputAudioTranscription = {};
+          setupInner.outputAudioTranscription = {};
+        }
+        const setup = { setup: setupInner };
+        this.recordAndSend(setup);
       });
 
       ws.on('message', (raw: Buffer | string) => {
@@ -113,6 +160,7 @@ export class GeminiLiveSession {
           if (msg.error) {
             const errMsg = msg.error.message || `Gemini error ${msg.error.code || ''}`;
             console.error(`[live] Gemini error: ${errMsg}`);
+            this.dumpLastOutbound('ON GEMINI ERROR');
             if (!settled) {
               settle(false, new Error(errMsg));
               try { ws.close(); } catch {}
@@ -138,6 +186,7 @@ export class GeminiLiveSession {
         console.log(
           `[live] WS closed: code=${code} reason=${reason?.toString() || 'none'} connected=${this.connected} awaitingPostToolTurn=${this.awaitingPostToolTurn} postToolOutputStarted=${this.postToolOutputStarted}`,
         );
+        this.dumpLastOutbound(`ON CLOSE code=${code}`);
         if (!settled) {
           settle(false, new Error(`WS closed before setup: code ${code}`));
         } else if (this.connected) {
@@ -219,22 +268,22 @@ export class GeminiLiveSession {
 
   sendAudio(base64: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
+      this.recordAndSend({
         realtimeInput: {
           audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
         },
-      }));
+      });
     }
   }
 
   sendText(text: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
+      this.recordAndSend({
         clientContent: {
           turns: [{ role: 'user', parts: [{ text }] }],
           turnComplete: true,
         },
-      }));
+      });
     }
   }
 
@@ -244,11 +293,11 @@ export class GeminiLiveSession {
       this.postToolOutputStarted = false;
       this.lastToolResponseMeta = { id, name };
       console.log(`[live] Sending toolResponse for ${name}:${id}`, result);
-      this.ws.send(JSON.stringify({
+      this.recordAndSend({
         toolResponse: {
           functionResponses: [{ name, id, response: { result } }],
         },
-      }));
+      });
     }
   }
 

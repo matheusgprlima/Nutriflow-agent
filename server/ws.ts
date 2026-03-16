@@ -186,8 +186,10 @@ export function attachWs(server: Server) {
             });
 
             try {
-              console.log('[ws] Connecting to Gemini Live...');
-              await live.connect(sysInstruction, [PLAN_TOOL_DECLARATION]);
+              const useTools = process.env.LIVE_NO_TOOLS !== '1';
+              const tools = useTools ? [PLAN_TOOL_DECLARATION] : [];
+              console.log('[ws] Connecting to Gemini Live...', { useTools, toolsCount: tools.length });
+              await live.connect(sysInstruction, tools);
               session.liveSession = live;
               console.log('[ws] Gemini Live connected and assigned to session');
             } catch (err: any) {
