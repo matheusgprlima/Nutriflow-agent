@@ -173,6 +173,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             break;
           }
           case 'live_interrupted':
+          console.warn('[ctx] live_interrupted received');
             setState((s) => ({ ...s, agentSpeaking: false }));
             break;
           case 'live_turn_complete':

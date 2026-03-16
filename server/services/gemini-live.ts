@@ -24,6 +24,9 @@ export class GeminiLiveSession {
   private ws: WebSocket | null = null;
   private cb: LiveCallbacks;
   private connected = false;
+  private awaitingPostToolTurn = false;
+  private postToolOutputStarted = false;
+  private lastToolResponseMeta: { id: string; name: string } | null = null;
 
   constructor(cb: LiveCallbacks) {
     this.cb = cb;
@@ -128,7 +131,9 @@ export class GeminiLiveSession {
       });
 
       ws.on('close', (code, reason) => {
-        console.log(`[live] WS closed: code=${code} reason=${reason?.toString() || 'none'} connected=${this.connected}`);
+        console.log(
+          `[live] WS closed: code=${code} reason=${reason?.toString() || 'none'} connected=${this.connected} awaitingPostToolTurn=${this.awaitingPostToolTurn} postToolOutputStarted=${this.postToolOutputStarted}`,
+        );
         if (!settled) {
           settle(false, new Error(`WS closed before setup: code ${code}`));
         } else if (this.connected) {
@@ -148,6 +153,18 @@ export class GeminiLiveSession {
 
     if (msg.serverContent) {
       const sc = msg.serverContent;
+      const hasAudio = Array.isArray(sc.modelTurn?.parts)
+        ? sc.modelTurn.parts.some((part: any) => !!part.inlineData?.data)
+        : false;
+      const outputText = sc.outputTranscription?.text || '';
+
+      if (this.awaitingPostToolTurn && !this.postToolOutputStarted && (hasAudio || outputText.trim())) {
+        this.postToolOutputStarted = true;
+        console.log(
+          `[live] Post-tool model output started for ${this.lastToolResponseMeta?.name ?? 'unknown tool'}:${this.lastToolResponseMeta?.id ?? 'unknown id'}`,
+          { hasAudio, outputTextPreview: outputText.slice(0, 120) },
+        );
+      }
 
       if (sc.modelTurn?.parts) {
         for (const part of sc.modelTurn.parts) {
@@ -164,15 +181,29 @@ export class GeminiLiveSession {
         this.cb.onOutputTranscript(sc.outputTranscription.text);
       }
       if (sc.turnComplete) {
+        if (this.awaitingPostToolTurn) {
+          console.log(
+            `[live] Post-tool turnComplete for ${this.lastToolResponseMeta?.name ?? 'unknown tool'}:${this.lastToolResponseMeta?.id ?? 'unknown id'} | outputStarted=${this.postToolOutputStarted}`,
+          );
+          this.awaitingPostToolTurn = false;
+          this.postToolOutputStarted = false;
+          this.lastToolResponseMeta = null;
+        }
         this.cb.onTurnComplete();
       }
       if (sc.interrupted) {
+        if (this.awaitingPostToolTurn) {
+          console.warn(
+            `[live] Post-tool turn interrupted for ${this.lastToolResponseMeta?.name ?? 'unknown tool'}:${this.lastToolResponseMeta?.id ?? 'unknown id'} | outputStarted=${this.postToolOutputStarted}`,
+          );
+        }
         this.cb.onInterrupted();
       }
     }
 
     if (msg.toolCall?.functionCalls) {
       for (const fc of msg.toolCall.functionCalls) {
+        console.log(`[live] toolCall received: ${fc.name}:${fc.id}`);
         this.cb.onToolCall(fc.name, fc.id, fc.args || {});
       }
     }
@@ -201,6 +232,10 @@ export class GeminiLiveSession {
 
   respondToTool(id: string, name: string, result: any) {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      this.awaitingPostToolTurn = true;
+      this.postToolOutputStarted = false;
+      this.lastToolResponseMeta = { id, name };
+      console.log(`[live] Sending toolResponse for ${name}:${id}`, result);
       this.ws.send(JSON.stringify({
         toolResponse: {
           functionResponses: [{ name, id, response: { result } }],
@@ -211,6 +246,11 @@ export class GeminiLiveSession {
 
   close() {
     if (this.ws) {
+      if (this.awaitingPostToolTurn) {
+        console.warn(
+          `[live] Closing websocket while awaiting post-tool turn for ${this.lastToolResponseMeta?.name ?? 'unknown tool'}:${this.lastToolResponseMeta?.id ?? 'unknown id'} | outputStarted=${this.postToolOutputStarted}`,
+        );
+      }
       this.ws.close();
       this.ws = null;
     }

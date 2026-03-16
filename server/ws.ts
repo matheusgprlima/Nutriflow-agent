@@ -133,7 +133,10 @@ export function attachWs(server: Server) {
                 console.log('[ws] turnComplete → sending live_turn_complete to client');
                 send(ws, { type: 'live_turn_complete' });
               },
-              onInterrupted: () => send(ws, { type: 'live_interrupted' }),
+              onInterrupted: () => {
+                console.warn('[ws] Gemini reported interruption during live turn');
+                send(ws, { type: 'live_interrupted' });
+              },
               onError: (message) => {
                 console.error('[ws] Live session error:', message);
                 send(ws, { type: 'live_error', payload: { message } });
@@ -146,8 +149,10 @@ export function attachWs(server: Server) {
               onToolCall: async (name, id, args) => {
                 console.log(`[ws] Tool call: ${name}`, args);
                 if (name === 'generate_adjusted_plan') {
+                  const startedAt = Date.now();
                   try {
                     const routineSummary = args.routine_summary || 'No specific routine provided.';
+                    console.log(`[ws] Starting generateAdjustedDiet for tool ${name}:${id}`);
                     send(ws, { type: 'progress', payload: { step: 'generating', detail: 'Agent is generating your plan…' } });
                     const result = await generateAdjustedDiet(
                       session.extractedDiet!,
@@ -156,7 +161,7 @@ export function attachWs(server: Server) {
                     ) as AdjustedDiet;
 
                     if (result?.meals?.length) {
-                      console.log('[ws] Tool success: sending adjusted_diet + respondToTool');
+                      console.log(`[ws] Tool success after ${Date.now() - startedAt}ms: sending adjusted_diet + respondToTool`);
                       send(ws, { type: 'adjusted_diet', payload: result });
                       const totalItems = result.meals.reduce((n: number, m: any) => n + (m.items?.length || 0), 0);
                       const changedItems = result.meals.flatMap((m: any) => m.items || []).filter((it: any) => it.previousQuantity != null && it.previousQuantity !== it.quantity).length;
@@ -168,9 +173,11 @@ export function attachWs(server: Server) {
                         summary: `Adjusted ${changedItems} of ${totalItems} food items across ${result.meals.length} meals. The dashboard is ready for the user.`,
                       });
                     } else {
+                      console.warn(`[ws] Tool returned empty result after ${Date.now() - startedAt}ms`);
                       live.respondToTool(id, name, { status: 'failed', reason: 'Could not generate adjusted plan. Apologize briefly and suggest the user try again.' });
                     }
                   } catch (err) {
+                    console.error(`[ws] Tool execution failed after ${Date.now() - startedAt}ms`);
                     logError('live:tool:generate', err instanceof Error ? err : new Error(String(err)));
                     live.respondToTool(id, name, { status: 'failed', reason: 'Generation encountered an error. Apologize and suggest the user try again.' });
                   }

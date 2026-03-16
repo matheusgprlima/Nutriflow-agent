@@ -30,6 +30,7 @@ export default function IntakePage() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [micActive, setMicActive] = useState(false);
+  const micSendEnabledRef = useRef(false);
 
   // Audio playback refs
   const playbackCtxRef = useRef<AudioContext | null>(null);
@@ -100,6 +101,22 @@ export default function IntakePage() {
     }
   }, [state.liveActive]);
 
+  // Keep the capture stream alive, but pause outbound audio whenever the
+  // agent is speaking or the plan is being generated/finalized. This prevents
+  // accidental barge-in and speaker-loopback from interrupting the post-tool turn.
+  useEffect(() => {
+    const enabled = state.liveActive && !state.agentSpeaking && !state.liveGenerating && !state.planReady;
+    if (micSendEnabledRef.current !== enabled) {
+      console.log('[intake] mic send enabled =', enabled, {
+        liveActive: state.liveActive,
+        agentSpeaking: state.agentSpeaking,
+        liveGenerating: state.liveGenerating,
+        planReady: state.planReady,
+      });
+      micSendEnabledRef.current = enabled;
+    }
+  }, [state.liveActive, state.agentSpeaking, state.liveGenerating, state.planReady]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -140,7 +157,15 @@ export default function IntakePage() {
 
   const startMic = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       streamRef.current = stream;
 
       const ctx = new AudioContext();
@@ -152,6 +177,7 @@ export default function IntakePage() {
       const targetRate = 16000;
 
       processor.onaudioprocess = (e) => {
+        if (!micSendEnabledRef.current) return;
         const input = e.inputBuffer.getChannelData(0);
         const inputRate = ctx.sampleRate;
 
@@ -198,6 +224,7 @@ export default function IntakePage() {
     processorRef.current = null;
     audioCtxRef.current = null;
     streamRef.current = null;
+    micSendEnabledRef.current = false;
     setMicActive(false);
   };
 
