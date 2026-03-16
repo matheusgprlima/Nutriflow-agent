@@ -94,8 +94,6 @@ export type SessionState = {
   liveTranscript: LiveTurn[];
   liveActive: boolean;
   agentSpeaking: boolean;
-  planReady: boolean;
-  closingDone: boolean;
   liveGenerating?: boolean;
 };
 

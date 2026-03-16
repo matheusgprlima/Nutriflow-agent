@@ -36,45 +36,15 @@ export default function IntakePage() {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
 
-  const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const maxNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const isLiveConnecting = state.status === 'live_connecting';
 
-  // Text-mode redirect: immediate when status=done and no live session context.
-  // The closingDone guard prevents this from racing with the live closing timer.
+  // Text-mode redirect: immediate when status=done and no live session was used.
   useEffect(() => {
-    if (state.adjustedDiet && state.status === 'done' && !state.closingDone && state.liveTranscript.length === 0) {
+    if (state.adjustedDiet && state.status === 'done' && state.liveTranscript.length === 0) {
       console.log('[intake] text-mode redirect → /results');
       navigate('/results');
     }
-  }, [state.adjustedDiet, state.status, state.closingDone, state.liveTranscript.length, navigate]);
-
-  // Live-mode redirect: 2s buffer after closingDone is set.
-  // closingDone is set by either live_turn_complete (agent finished speaking)
-  // or live_ended (session closed with plan ready). Either way, give 2s buffer.
-  // Does NOT depend on liveActive — that's the key fix.
-  useEffect(() => {
-    if (!state.closingDone) return;
-    if (closingTimerRef.current) return;
-    console.log('[intake] closingDone=true → starting 5s redirect timer');
-    closingTimerRef.current = setTimeout(() => {
-      closingTimerRef.current = null;
-      console.log('[intake] 5s timer fired → navigating to /results');
-      navigate('/results');
-    }, 5000);
-  }, [state.closingDone, navigate]);
-
-  // Failsafe: 30s max wait after plan ready in live context
-  useEffect(() => {
-    if (state.planReady && state.liveTranscript.length > 0 && !maxNavTimerRef.current) {
-      maxNavTimerRef.current = setTimeout(() => {
-        maxNavTimerRef.current = null;
-        console.log('[intake] 30s failsafe timer → navigating to /results');
-        navigate('/results');
-      }, 30000);
-    }
-  }, [state.planReady, state.liveTranscript.length, navigate]);
+  }, [state.adjustedDiet, state.status, state.liveTranscript.length, navigate]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -105,25 +75,23 @@ export default function IntakePage() {
   // agent is speaking or the plan is being generated/finalized. This prevents
   // accidental barge-in and speaker-loopback from interrupting the post-tool turn.
   useEffect(() => {
-    const enabled = state.liveActive && !state.agentSpeaking && !state.liveGenerating && !state.planReady;
+    const enabled = state.liveActive && !state.agentSpeaking && !state.liveGenerating && !state.adjustedDiet;
     if (micSendEnabledRef.current !== enabled) {
       console.log('[intake] mic send enabled =', enabled, {
         liveActive: state.liveActive,
         agentSpeaking: state.agentSpeaking,
         liveGenerating: state.liveGenerating,
-        planReady: state.planReady,
+        adjustedDiet: !!state.adjustedDiet,
       });
       micSendEnabledRef.current = enabled;
     }
-  }, [state.liveActive, state.agentSpeaking, state.liveGenerating, state.planReady]);
+  }, [state.liveActive, state.agentSpeaking, state.liveGenerating, state.adjustedDiet]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopMic();
       playbackCtxRef.current?.close();
-      if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
-      if (maxNavTimerRef.current) clearTimeout(maxNavTimerRef.current);
     };
   }, []);
 
@@ -269,10 +237,9 @@ export default function IntakePage() {
   const diet = state.extractedDiet;
   const totalItems = diet?.meals?.reduce((n, m) => n + (m.items?.length ?? 0), 0) ?? 0;
 
-  const liveSessionEnded = !state.liveActive && !isLiveConnecting && state.liveTranscript.length > 0 && !state.planReady && !state.closingDone;
-
-  // Transitional state: live session ended but plan exists, redirect pending
-  const showClosingTransition = state.closingDone && !state.liveActive;
+  const hasLiveHistory = state.liveTranscript.length > 0;
+  const liveDone = !state.liveActive && !isLiveConnecting && hasLiveHistory;
+  const planAvailable = !!state.adjustedDiet;
 
   return (
     <Layout>
@@ -282,19 +249,17 @@ export default function IntakePage() {
           <p className="text-gray-400">Upload your diet, talk to the agent, and get your adjusted daily plan.</p>
         </div>
 
-        {/* Universal CTA: always visible when plan is ready and session is not actively live */}
-        {state.adjustedDiet && !state.liveActive && !isLiveConnecting && (
-          <div className="bg-primary/10 border border-primary/30 rounded-2xl p-5 flex items-center justify-between gap-4">
+        {/* Top banner — visible after session ends with plan ready, scrolled-up safety net */}
+        {planAvailable && liveDone && (
+          <div
+            className="bg-primary/10 border border-primary/30 rounded-2xl p-4 flex items-center justify-between gap-4 cursor-pointer hover:bg-primary/15 transition-colors"
+            onClick={() => navigate('/results')}
+          >
             <div className="flex items-center gap-3">
-              <CheckCircle className="w-6 h-6 text-primary shrink-0" />
-              <div>
-                <p className="text-base font-semibold text-white">Your daily plan is ready</p>
-                <p className="text-xs text-gray-400 mt-0.5">View your adjusted plan, nutrition analytics, and download PDF.</p>
-              </div>
+              <CheckCircle className="w-5 h-5 text-primary shrink-0" />
+              <p className="text-sm font-medium text-white">Your daily plan is ready — tap to view</p>
             </div>
-            <Button onClick={() => navigate('/results')} icon={<ArrowRight className="w-4 h-4" />}>
-              View results
-            </Button>
+            <ArrowRight className="w-4 h-4 text-primary shrink-0" />
           </div>
         )}
 
@@ -376,8 +341,8 @@ export default function IntakePage() {
         <GlassCard className="space-y-4" glowBorder={state.liveActive}>
           <SectionHeader step={3} done={state.liveTranscript.length > 0 || hasContext} label="Talk to your agent" required />
 
-          {/* Mode toggle */}
-          {!state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
+          {/* Mode toggle — only when no live session has started yet */}
+          {!state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
             <div className="flex gap-2">
               <button
                 onClick={() => setMode('live')}
@@ -394,8 +359,8 @@ export default function IntakePage() {
             </div>
           )}
 
-          {/* === Start button === */}
-          {mode === 'live' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
+          {/* Start button — only when no live session has started yet */}
+          {mode === 'live' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
             <div className="text-center py-4 space-y-4">
               <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your day and generate your adjusted plan.</p>
               <Button
@@ -422,54 +387,14 @@ export default function IntakePage() {
           {/* Active live session */}
           {state.liveActive && (
             <div className="space-y-4">
-              {/* Plan ready + closing done — about to redirect */}
-              {state.closingDone && (
-                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-pulse">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle className="w-5 h-5 text-primary shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-white">Your daily plan is ready</p>
-                      <p className="text-xs text-gray-400">Taking you to the dashboard…</p>
-                    </div>
-                  </div>
-                  <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
-                    View now
-                  </Button>
-                </div>
-              )}
-
-              {/* Plan ready but agent still delivering closing */}
-              {state.planReady && !state.closingDone && (
-                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle className="w-5 h-5 text-primary shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-white">Your daily plan is ready</p>
-                      <p className="text-xs text-gray-400">Listening to the agent's summary…</p>
-                    </div>
-                  </div>
-                  <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
-                    View now
-                  </Button>
-                </div>
-              )}
-
-              {/* Generating indicator — agent called tool, waiting for result */}
-              {state.liveGenerating && !state.planReady && (
-                <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center gap-3">
-                  <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
-                  <p className="text-xs text-gray-400">Preparing your adjusted plan… this takes a few seconds.</p>
-                </div>
-              )}
-
               {/* Status bar */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full ${state.agentSpeaking ? 'bg-accent' : 'bg-primary'} animate-pulse`} />
-                  <span className="text-xs text-primary font-medium">
+                  <span className="text-xs font-medium text-gray-300">
                     {state.agentSpeaking ? 'Agent speaking' : 'Listening'}
                   </span>
-                  {micActive && !state.agentSpeaking && (
+                  {micActive && !state.agentSpeaking && !planAvailable && (
                     <span className="text-xs text-gray-500 flex items-center gap-1"><Mic className="w-3 h-3" /> Mic on</span>
                   )}
                   {state.agentSpeaking && (
@@ -484,8 +409,8 @@ export default function IntakePage() {
                 </button>
               </div>
 
-              {/* Transcript */}
-              <div className="bg-black/30 rounded-xl p-4 max-h-[300px] overflow-y-auto space-y-3">
+              {/* Transcript — dims when plan is ready so CTA draws the eye */}
+              <div className={`bg-black/30 rounded-xl p-4 overflow-y-auto space-y-3 transition-opacity ${planAvailable ? 'max-h-[180px] opacity-50' : 'max-h-[300px]'}`}>
                 {state.liveTranscript.length === 0 && (
                   <p className="text-sm text-gray-600 italic text-center">Speak naturally — the agent is listening…</p>
                 )}
@@ -503,71 +428,29 @@ export default function IntakePage() {
                 <div ref={transcriptEndRef} />
               </div>
 
-              {/* Live text input */}
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={liveTextInput}
-                  onChange={(e) => setLiveTextInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleLiveTextSend()}
-                  placeholder="Or type a message to the agent…"
-                  className="flex-1 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 px-4 py-2.5 text-sm focus:outline-none focus:border-primary/50"
-                />
-                <Button size="sm" onClick={handleLiveTextSend} disabled={!liveTextInput.trim()}>Send</Button>
-              </div>
-            </div>
-          )}
-
-          {/* Post-session closing transition: plan ready, session ended, redirect pending */}
-          {showClosingTransition && (
-            <div className="space-y-4">
-              <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-pulse">
-                <div className="flex items-center gap-3">
-                  <CheckCircle className="w-5 h-5 text-primary shrink-0" />
-                  <div>
-                    <p className="text-sm font-medium text-white">Your daily plan is ready</p>
-                    <p className="text-xs text-gray-400">Taking you to the dashboard…</p>
-                  </div>
-                </div>
-                <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
-                  View now
-                </Button>
-              </div>
-              {state.liveTranscript.length > 0 && (
-                <div className="bg-black/30 rounded-xl p-4 max-h-[200px] overflow-y-auto space-y-3 opacity-60">
-                  {state.liveTranscript.map((turn, i) => (
-                    <div key={i} className="flex items-start gap-2">
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
-                        {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
-                      </div>
-                      <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
-                    </div>
-                  ))}
+              {/* Live text input — hidden once plan is ready */}
+              {!planAvailable && (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={liveTextInput}
+                    onChange={(e) => setLiveTextInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleLiveTextSend()}
+                    placeholder="Or type a message to the agent…"
+                    className="flex-1 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 px-4 py-2.5 text-sm focus:outline-none focus:border-primary/50"
+                  />
+                  <Button size="sm" onClick={handleLiveTextSend} disabled={!liveTextInput.trim()}>Send</Button>
                 </div>
               )}
             </div>
           )}
 
-          {/* Plan ready, session ended, but closingDone not set — show transcript */}
-          {state.planReady && !state.liveActive && !state.closingDone && state.liveTranscript.length > 0 && (
-            <div className="bg-black/30 rounded-xl p-4 max-h-[250px] overflow-y-auto space-y-3 opacity-70">
-              {state.liveTranscript.map((turn, i) => (
-                <div key={i} className="flex items-start gap-2">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
-                    {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
-                  </div>
-                  <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Session ended without plan — can restart */}
-          {liveSessionEnded && (
+          {/* Post-session: session ended, show read-only transcript */}
+          {liveDone && (
             <div className="space-y-4">
-              <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between">
-                <p className="text-xs text-gray-400">Session ended. You can restart or switch to text mode.</p>
-                <div className="flex items-center gap-2">
+              {!planAvailable && (
+                <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between">
+                  <p className="text-xs text-gray-400">Session ended. You can restart or switch to text mode.</p>
                   <button
                     onClick={handleStartLive}
                     disabled={!dietReady}
@@ -576,8 +459,8 @@ export default function IntakePage() {
                     <RefreshCw className="w-3 h-3" /> Restart
                   </button>
                 </div>
-              </div>
-              <div className="bg-black/30 rounded-xl p-4 max-h-[200px] overflow-y-auto space-y-3 opacity-70">
+              )}
+              <div className={`bg-black/30 rounded-xl p-4 max-h-[180px] overflow-y-auto space-y-3 transition-opacity ${planAvailable ? 'opacity-40' : 'opacity-70'}`}>
                 {state.liveTranscript.map((turn, i) => (
                   <div key={i} className="flex items-start gap-2">
                     <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
@@ -590,8 +473,35 @@ export default function IntakePage() {
             </div>
           )}
 
-          {/* === Text fallback mode === */}
-          {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
+          {/* Persistent live CTA — always visible during/after voice conversation */}
+          {mode === 'live' && (state.liveActive || isLiveConnecting || hasLiveHistory) && (
+            <div className="pt-3 mt-2 border-t border-white/5 space-y-3">
+              <LiveStatusLine
+                connecting={isLiveConnecting}
+                active={state.liveActive}
+                speaking={state.agentSpeaking}
+                generating={!!state.liveGenerating}
+                ready={planAvailable}
+              />
+              <Button
+                size="lg"
+                onClick={() => navigate('/results')}
+                disabled={!planAvailable}
+                isLoading={!!state.liveGenerating && !planAvailable}
+                icon={planAvailable ? <ArrowRight className="w-5 h-5" /> : undefined}
+                className="w-full py-4 text-base"
+              >
+                {state.liveGenerating && !planAvailable
+                  ? 'Generating your daily plan…'
+                  : planAvailable
+                    ? 'Open your daily plan'
+                    : 'Waiting for your plan…'}
+              </Button>
+            </div>
+          )}
+
+          {/* Text fallback mode — only when no live session has been used */}
+          {mode === 'text' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
             <div className="space-y-3">
               <p className="text-sm text-gray-500">Describe your routine, training schedule, and eating patterns for today.</p>
               <textarea
@@ -605,7 +515,7 @@ export default function IntakePage() {
         </GlassCard>
 
         {/* ====== Text-mode CTA ====== */}
-        {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && !showClosingTransition && (
+        {mode === 'text' && !state.liveActive && !isLiveConnecting && !hasLiveHistory && !planAvailable && (
           <div className="pt-2 pb-8">
             <Button
               size="lg"
@@ -637,6 +547,49 @@ function SectionHeader({ step, done, label, required, optional }: { step: number
       <h2 className="text-lg font-semibold text-white">{label}</h2>
       {required && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-300 uppercase tracking-wider">required</span>}
       {optional && <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-500 uppercase tracking-wider">optional</span>}
+    </div>
+  );
+}
+
+function LiveStatusLine({ connecting, active, speaking, generating, ready }: {
+  connecting: boolean; active: boolean; speaking: boolean; generating: boolean; ready: boolean;
+}) {
+  let icon: React.ReactNode;
+  let text: string;
+  let accent = 'text-gray-500';
+
+  if (ready && !active) {
+    icon = <CheckCircle className="w-3.5 h-3.5 text-primary" />;
+    text = 'Conversation complete — your plan is ready';
+    accent = 'text-primary';
+  } else if (ready && active) {
+    icon = <CheckCircle className="w-3.5 h-3.5 text-primary" />;
+    text = 'Your plan is ready — keep listening or open it now';
+    accent = 'text-primary';
+  } else if (generating) {
+    icon = <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />;
+    text = 'Preparing your daily plan…';
+    accent = 'text-gray-400';
+  } else if (connecting) {
+    icon = <Loader2 className="w-3.5 h-3.5 text-gray-500 animate-spin" />;
+    text = 'Connecting to your planning agent…';
+  } else if (active && speaking) {
+    icon = <Volume2 className="w-3.5 h-3.5 text-accent" />;
+    text = 'Agent is speaking';
+    accent = 'text-gray-400';
+  } else if (active) {
+    icon = <Mic className="w-3.5 h-3.5 text-primary" />;
+    text = 'Conversation in progress';
+    accent = 'text-gray-400';
+  } else {
+    icon = <PhoneOff className="w-3.5 h-3.5 text-gray-600" />;
+    text = 'Session ended';
+  }
+
+  return (
+    <div className={`flex items-center gap-2 text-xs ${accent}`}>
+      {icon}
+      <span>{text}</span>
     </div>
   );
 }
