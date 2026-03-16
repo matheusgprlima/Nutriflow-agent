@@ -1,79 +1,81 @@
-# NutriFlow Live
+# NutriFlow Agent
 
-**Real-time multimodal daily diet planning agent** powered by Gemini Live API.
+Multimodal daily diet planning assistant built for hackathon speed and reliability.
 
-Upload your current diet plan → speak to the AI agent about your routine → get an adjusted daily plan with the same foods, portions tuned for your day.
+Users upload a baseline diet (image or PDF), optionally add smartwatch/activity screenshots, provide daily context in text, and receive an adjusted daily plan that preserves the original diet structure.
 
-## Architecture
+## Architecture Diagram
 
+```mermaid
+flowchart LR
+    U[User]
+
+    subgraph FE[Frontend - React + Vite]
+      IN[Intake Page]
+      RES[Results Page]
+      PDF[PDF Export]
+    end
+
+    subgraph BE[Backend - Node.js + TypeScript<br/>Google Cloud Run (Stateless)]
+      WS[WebSocket API (/ws)]
+      EX[Diet Extraction Service]
+      GEN[Adjusted Plan Generation Service]
+    end
+
+    G[Gemini via Google GenAI SDK]
+
+    U -->|Upload baseline diet<br/>(image/PDF)| IN
+    U -->|Enter daily context text| IN
+    U -->|Optional smartwatch/<br/>health screenshots| IN
+
+    IN <-->|WebSocket messages| WS
+    WS --> EX
+    WS --> GEN
+
+    EX -->|Structured baseline diet| G
+    GEN -->|Diet + text context +<br/>optional screenshots| G
+    G -->|Extracted baseline + adjusted plan| WS
+
+    WS --> RES
+    RES -->|Baseline summary + analytics +<br/>adjusted daily plan| U
+    RES --> PDF
+    PDF -->|Downloadable report| U
 ```
-Browser (React + Vite)
-  │
-  │  WebSocket (/ws)
-  ▼
-Node.js + Express (server.ts)
-  │
-  ├── Diet extraction ──────► Gemini 2.5 Flash (structured JSON)
-  │
-  ├── Live voice session ───► Gemini Live API (bidirectional audio + tool calling)
-  │     │
-  │     └── Tool: generate_adjusted_plan
-  │           └── Gemini 2.5 Flash (structured JSON)
-  │
-  └── Health screenshots ───► Passed as multimodal context to Gemini
-```
 
-- **Frontend**: React 19 + TypeScript + Vite + Tailwind CSS 4
-- **Backend**: Node.js + Express + WebSocket (`ws` library)
-- **AI**: Google Gemini via `@google/genai` SDK
-  - Diet extraction: `gemini-2.5-flash` (multimodal, structured output)
-  - Live agent: Gemini Live API (`gemini-2.5-flash-preview-native-audio-dialog`)
-  - Adjusted plan: `gemini-2.5-flash` (structured output, tool-called from live session)
-- **No database**: Ephemeral in-memory session per WebSocket connection
-- **Deployment**: Docker → Google Cloud Run
+This diagram reflects the current implementation: a single stateless backend service on Cloud Run, WebSocket communication, Gemini for extraction and generation, and no database/auth/queue/microservice layer.
 
-## Product flow
+For Devpost upload: use [docs/architecture-diagram.md](/home/matheus/Documentos/nutriflow/Nutriflow-agent/docs/architecture-diagram.md) (or export the Mermaid diagram from that file as an image).
 
-1. **Home** — Explains the product, drives user to start
-2. **Intake** — Unified page:
-   - Upload baseline diet (image/PDF) → Gemini extracts meals + macros
-   - Optionally add Apple Watch / smartwatch screenshots
-   - **Start live voice conversation** with the NutriFlow agent
-   - Agent asks about routine, training, eating patterns
-   - Agent calls `generate_adjusted_plan` tool when ready
-   - (Fallback: type routine context + click Generate)
-3. **Results** — Analytics dashboard + adjusted daily plan + PDF export
+## Product Flow
 
-## Multimodal capabilities
+1. User opens the web app.
+2. User uploads a baseline diet file (image/PDF).
+3. User provides daily context in text.
+4. User can optionally upload Apple Watch/smartwatch/health screenshots.
+5. Frontend sends inputs to backend over WebSocket.
+6. Backend calls Gemini to:
+   - extract baseline diet into structured data
+   - generate an adjusted daily plan based on baseline + text context + optional screenshots
+7. Frontend shows:
+   - baseline summary
+   - adjusted daily plan
+   - analytics/dashboard views
+   - PDF export
 
-| Modality | Input | Processing |
-|----------|-------|------------|
-| Image | Diet photo, health screenshots | Gemini multimodal extraction |
-| PDF | Diet document | Gemini document understanding |
-| Audio | Live voice conversation | Gemini Live API (bidirectional) |
-| Text | Typed routine context | Gemini text understanding |
+## Stack
 
-## Google technologies used
+- Frontend: React 19 + TypeScript + Vite + Tailwind CSS 4
+- Backend: Node.js + TypeScript + Express + `ws`
+- AI: Gemini via `@google/genai` SDK
+- Deployment: Google Cloud Run
+- Architecture: Stateless, no database, no auth, no queues, no microservices
 
-| Technology | Role |
-|-----------|------|
-| Gemini 2.5 Flash | Diet extraction, adjusted plan generation |
-| Gemini Live API | Real-time voice agent conversation |
-| Google GenAI SDK (`@google/genai`) | All Gemini API interactions |
-| Google Cloud Run | Deployment target |
+## WebSocket Protocol
 
-## WebSocket protocol
+- Client -> Server: `diet_upload`, `transcript`, `health_upload`, `clear_health`, `generate_adjusted`, `start_live`, `live_text`, `end_live`
+- Server -> Client: `progress`, `extraction_result`, `extraction_error`, `health_uploaded`, `health_cleared`, `adjusted_diet`, `adjusted_diet_error`, `error`, `live_ready`, `live_input_transcript`, `live_output_transcript`, `live_turn_complete`, `live_error`, `live_ended`
 
-### Existing flow (diet extraction + text generation)
-- **Client → Server**: `diet_upload`, `transcript`, `health_upload`, `clear_health`, `generate_adjusted`
-- **Server → Client**: `progress`, `extraction_result`, `extraction_error`, `health_uploaded`, `health_cleared`, `adjusted_diet`, `adjusted_diet_error`, `error`
-
-### Live agent flow
-- **Client → Server**: `start_live`, `audio_chunk`, `live_text`, `end_live`
-- **Server → Client**: `live_ready`, `live_audio`, `live_input_transcript`, `live_output_transcript`, `live_interrupted`, `live_error`, `live_ended`
-- **Tool calling**: Agent calls `generate_adjusted_plan` → server executes → sends `adjusted_diet` to client
-
-## Getting started
+## Getting Started
 
 ```bash
 cp .env.example .env
@@ -86,7 +88,6 @@ npm run dev
 ## Deployment (Cloud Run)
 
 ```bash
-# Build and deploy
 gcloud run deploy nutriflow-live \
   --source . \
   --region us-central1 \
@@ -95,27 +96,21 @@ gcloud run deploy nutriflow-live \
   --port 8080
 ```
 
-## AI constraints
+## Project Structure
 
-- No new foods in the adjusted diet — only quantity/portion adjustments
-- No medical or nutrition advice
-- No supplements or medication recommendations
-- Uncertainty is surfaced, not hidden
-- Original diet is preserved as the baseline
-
-## Project structure
-
-```
+```text
 src/                  Frontend (React)
   pages/              Home, IntakePage, ResultsPage
   context/            SessionContext (WS + state)
   components/         Layout, GlassCard, Button, MacroDisplay
   shared/schemas.ts   Zod schemas + WS message types
 server.ts             HTTP server + Vite + WS
-server/ws.ts          WebSocket handler (session, live relay)
+server/ws.ts          WebSocket handler (session + generation flow)
 server/services/
   gemini.ts           Diet extraction + adjusted plan generation
-  gemini-live.ts      Gemini Live API relay + tool calling
+  gemini-live.ts      Live session helper + tool-calling wiring
   logger.ts           Error logging
+docs/
+  architecture-diagram.md
 Dockerfile            Cloud Run deployment
 ```
