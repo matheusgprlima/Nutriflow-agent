@@ -167,7 +167,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
                 } else {
                   turns.push({ role: 'agent', text });
                 }
-                return { ...s, liveTranscript: turns, agentSpeaking: true };
+                return { ...s, liveTranscript: turns };
               });
             }
             break;
