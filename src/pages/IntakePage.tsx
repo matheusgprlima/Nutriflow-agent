@@ -3,8 +3,9 @@ import { Layout } from '../components/Layout';
 import { GlassCard } from '../components/ui/GlassCard';
 import { Button } from '../components/ui/Button';
 import {
-  FileText, Loader2, AlertCircle, Check, Mic, Square, Watch,
-  Upload, X, Sparkles, ChevronDown, PhoneCall, PhoneOff, MessageSquare, Volume2, User, Bot, RefreshCw,
+  FileText, Loader2, AlertCircle, Check, Mic, Watch,
+  Upload, X, Sparkles, ChevronDown, PhoneCall, PhoneOff, MessageSquare,
+  Volume2, User, Bot, RefreshCw, CheckCircle, ArrowRight,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSession } from '../context/SessionContext';
@@ -34,11 +35,28 @@ export default function IntakePage() {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
 
+  const autoNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const isLiveConnecting = state.status === 'live_connecting';
 
+  // Auto-redirect: when plan is ready and NOT in active live, go to results
   useEffect(() => {
-    if (state.adjustedDiet && state.status === 'done') navigate('/results');
+    if (state.adjustedDiet && state.status === 'done') {
+      navigate('/results');
+    }
   }, [state.adjustedDiet, state.status, navigate]);
+
+  // Auto-redirect during live: when planReady, give agent time to say goodbye then navigate
+  useEffect(() => {
+    if (state.planReady && state.liveActive) {
+      autoNavTimerRef.current = setTimeout(() => {
+        navigate('/results');
+      }, 6000);
+    }
+    return () => {
+      if (autoNavTimerRef.current) clearTimeout(autoNavTimerRef.current);
+    };
+  }, [state.planReady, state.liveActive, navigate]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -70,6 +88,7 @@ export default function IntakePage() {
     return () => {
       stopMic();
       playbackCtxRef.current?.close();
+      if (autoNavTimerRef.current) clearTimeout(autoNavTimerRef.current);
     };
   }, []);
 
@@ -205,6 +224,8 @@ export default function IntakePage() {
   const diet = state.extractedDiet;
   const totalItems = diet?.meals?.reduce((n, m) => n + (m.items?.length ?? 0), 0) ?? 0;
 
+  const liveSessionEnded = !state.liveActive && !isLiveConnecting && state.liveTranscript.length > 0 && !state.planReady;
+
   return (
     <Layout>
       <div className="max-w-3xl mx-auto space-y-6">
@@ -244,7 +265,9 @@ export default function IntakePage() {
                   <p className="text-xs text-gray-500">{diet!.meals.length} meals · {totalItems} items · {((diet!.confidence ?? 0) * 100).toFixed(0)}% confidence</p>
                 </div>
               </div>
-              <button onClick={() => dietInputRef.current?.click()} className="text-xs text-gray-400 hover:text-white transition-colors shrink-0">Replace</button>
+              {!state.liveActive && !isLiveConnecting && (
+                <button onClick={() => dietInputRef.current?.click()} className="text-xs text-gray-400 hover:text-white transition-colors shrink-0">Replace</button>
+              )}
             </div>
           ) : (
             <div
@@ -252,7 +275,7 @@ export default function IntakePage() {
               onClick={() => !isExtracting && dietInputRef.current?.click()}
             >
               {isExtracting ? (
-                <><Loader2 className="w-8 h-8 text-primary animate-spin mb-3" /><p className="text-sm text-gray-300">Extracting your diet…</p><p className="text-xs text-gray-500 mt-1">10–20 seconds</p></>
+                <><Loader2 className="w-8 h-8 text-primary animate-spin mb-3" /><p className="text-sm text-gray-300">Extracting your diet…</p><p className="text-xs text-gray-500 mt-1">This takes about 10–20 seconds</p></>
               ) : (
                 <><Upload className="w-8 h-8 text-gray-500 mb-3" /><p className="text-sm text-white font-medium">Drop file or click to upload</p><p className="text-xs text-gray-500 mt-1">Image or PDF · max 20 MB</p></>
               )}
@@ -267,7 +290,7 @@ export default function IntakePage() {
         {/* ====== SECTION 2: Activity Data (Optional) ====== */}
         <GlassCard className="space-y-4">
           <SectionHeader step={2} done={state.healthFileNames.length > 0} label="Activity & health data" optional />
-          <p className="text-sm text-gray-500">Add Apple Watch or health app screenshots for better accuracy.</p>
+          <p className="text-sm text-gray-500">Add Apple Watch or health app screenshots for better planning accuracy.</p>
           <div
             className="border-2 border-dashed border-white/10 hover:border-accent/30 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-colors"
             onClick={() => healthInputRef.current?.click()}
@@ -290,7 +313,7 @@ export default function IntakePage() {
           <SectionHeader step={3} done={state.liveTranscript.length > 0 || hasContext} label="Talk to your agent" required />
 
           {/* Mode toggle */}
-          {!state.liveActive && !isLiveConnecting && (
+          {!state.liveActive && !isLiveConnecting && !liveSessionEnded && (
             <div className="flex gap-2">
               <button
                 onClick={() => setMode('live')}
@@ -307,10 +330,10 @@ export default function IntakePage() {
             </div>
           )}
 
-          {/* === Live conversation mode === */}
-          {mode === 'live' && !state.liveActive && !isLiveConnecting && (
+          {/* === Start button === */}
+          {mode === 'live' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
             <div className="text-center py-4 space-y-4">
-              <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your routine and generate your daily plan.</p>
+              <p className="text-sm text-gray-400">Start a live voice conversation with the NutriFlow agent. It will ask about your day and generate your adjusted plan.</p>
               <Button
                 onClick={handleStartLive}
                 disabled={!dietReady}
@@ -323,6 +346,7 @@ export default function IntakePage() {
             </div>
           )}
 
+          {/* Connecting spinner */}
           {isLiveConnecting && (
             <div className="text-center py-6 space-y-3">
               <Loader2 className="w-6 h-6 text-primary animate-spin mx-auto" />
@@ -334,6 +358,30 @@ export default function IntakePage() {
           {/* Active live session */}
           {state.liveActive && (
             <div className="space-y-4">
+              {/* Plan ready overlay */}
+              {state.planReady && (
+                <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 flex items-center justify-between gap-3 animate-in">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle className="w-5 h-5 text-primary shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-white">Your daily plan is ready!</p>
+                      <p className="text-xs text-gray-400">Redirecting to results…</p>
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={() => navigate('/results')} icon={<ArrowRight className="w-3.5 h-3.5" />}>
+                    View now
+                  </Button>
+                </div>
+              )}
+
+              {/* Generating indicator */}
+              {state.liveGenerating && !state.planReady && (
+                <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center gap-3">
+                  <Loader2 className="w-4 h-4 text-primary animate-spin shrink-0" />
+                  <p className="text-xs text-gray-400">The agent is generating your adjusted plan…</p>
+                </div>
+              )}
+
               {/* Status bar */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -369,14 +417,14 @@ export default function IntakePage() {
                 <div ref={transcriptEndRef} />
               </div>
 
-              {/* Live text input for typing while in live session */}
+              {/* Live text input */}
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={liveTextInput}
                   onChange={(e) => setLiveTextInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleLiveTextSend()}
-                  placeholder="Type a message to the agent…"
+                  placeholder="Or type a message to the agent…"
                   className="flex-1 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 px-4 py-2.5 text-sm focus:outline-none focus:border-primary/50"
                 />
                 <Button size="sm" onClick={handleLiveTextSend} disabled={!liveTextInput.trim()}>Send</Button>
@@ -384,13 +432,42 @@ export default function IntakePage() {
             </div>
           )}
 
+          {/* Session ended but transcript preserved */}
+          {liveSessionEnded && (
+            <div className="space-y-4">
+              <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between">
+                <p className="text-xs text-gray-400">Session ended. You can restart or switch to text mode.</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleStartLive}
+                    disabled={!dietReady}
+                    className="text-xs text-primary hover:text-white transition-colors flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Restart
+                  </button>
+                </div>
+              </div>
+              {/* Show preserved transcript */}
+              <div className="bg-black/30 rounded-xl p-4 max-h-[200px] overflow-y-auto space-y-3 opacity-70">
+                {state.liveTranscript.map((turn, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
+                      {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
+                    </div>
+                    <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* === Text fallback mode === */}
-          {mode === 'text' && !state.liveActive && !isLiveConnecting && (
+          {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500">Describe your routine, training, and eating patterns.</p>
+              <p className="text-sm text-gray-500">Describe your routine, training schedule, and eating patterns for today.</p>
               <textarea
                 className="w-full min-h-[120px] rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-600 p-4 resize-y focus:outline-none focus:border-primary/50 text-sm"
-                placeholder="e.g. I train 5x a week in the morning. On rest days I eat less. Weekends I eat more…"
+                placeholder="e.g. I train in the morning today, it's leg day. I slept well but I'm a bit stressed from work. I usually eat more on training days…"
                 value={state.transcript ?? ''}
                 onChange={handleTranscriptChange}
               />
@@ -399,7 +476,7 @@ export default function IntakePage() {
         </GlassCard>
 
         {/* ====== Text-mode CTA ====== */}
-        {mode === 'text' && !state.liveActive && !isLiveConnecting && (
+        {mode === 'text' && !state.liveActive && !isLiveConnecting && !liveSessionEnded && (
           <div className="pt-2 pb-8">
             <Button
               size="lg"
@@ -412,7 +489,7 @@ export default function IntakePage() {
               {isGenerating ? 'Generating your daily plan…' : 'Generate daily plan'}
             </Button>
             {!dietReady && <p className="text-center text-xs text-gray-600 mt-3">Upload your diet to continue</p>}
-            {dietReady && !hasContext && <p className="text-center text-xs text-gray-600 mt-3">Add routine context to generate</p>}
+            {dietReady && !hasContext && <p className="text-center text-xs text-gray-600 mt-3">Add your routine context to generate</p>}
           </div>
         )}
       </div>

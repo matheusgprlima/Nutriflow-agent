@@ -23,6 +23,7 @@ const initialState: SessionState = {
   liveTranscript: [],
   liveActive: false,
   agentSpeaking: false,
+  planReady: false,
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -70,12 +71,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     ws.onclose = () => {
       console.log('[ctx] WS disconnected');
       clearLiveTimeout();
-      setState((s) => ({ ...s, logs: [...s.logs, 'Disconnected'], liveActive: false, status: s.status === 'live' || s.status === 'live_connecting' ? 'ready' : s.status }));
+      setState((s) => ({
+        ...s,
+        logs: [...s.logs, 'Disconnected'],
+        liveActive: false,
+        agentSpeaking: false,
+        status: s.status === 'live' || s.status === 'live_connecting'
+          ? (s.adjustedDiet ? 'done' : 'ready')
+          : s.status,
+      }));
     };
     ws.onerror = () => {
       console.error('[ctx] WS error');
       clearLiveTimeout();
-      setState((s) => ({ ...s, status: 'error', errorMessage: 'Connection error', liveActive: false }));
+      setState((s) => ({ ...s, status: 'error', errorMessage: 'Connection lost. Please refresh and try again.', liveActive: false }));
     };
 
     ws.onmessage = (event) => {
@@ -83,11 +92,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         const msg = JSON.parse(event.data) as ServerWsMessage;
         switch (msg.type) {
           case 'progress':
-            setState((s) => ({
-              ...s,
-              status: msg.payload.step === 'extracting' ? 'extracting' : 'generating',
-              logs: [...s.logs, msg.payload.detail || msg.payload.step],
-            }));
+            setState((s) => {
+              if (s.status === 'live' || s.status === 'live_connecting') {
+                return { ...s, liveGenerating: true, logs: [...s.logs, msg.payload.detail || msg.payload.step] };
+              }
+              return {
+                ...s,
+                status: msg.payload.step === 'extracting' ? 'extracting' : 'generating',
+                logs: [...s.logs, msg.payload.detail || msg.payload.step],
+              };
+            });
             break;
           case 'extraction_result':
             setState((s) => ({ ...s, extractedDiet: msg.payload.diet, status: 'ready', logs: [...s.logs, 'Diet extracted'] }));
@@ -102,7 +116,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             setState((s) => ({ ...s, healthScreenshotCount: 0, healthFileNames: [] }));
             break;
           case 'adjusted_diet':
-            setState((s) => ({ ...s, adjustedDiet: msg.payload, status: 'done', logs: [...s.logs, 'Daily plan ready'] }));
+            console.log('[ctx] adjusted_diet received, liveActive=', state.liveActive);
+            setState((s) => ({
+              ...s,
+              adjustedDiet: msg.payload,
+              liveGenerating: false,
+              planReady: true,
+              status: s.liveActive ? 'live' : 'done',
+              logs: [...s.logs, 'Daily plan ready'],
+            }));
             break;
 
           // Live session messages
@@ -157,7 +179,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
               ...s,
               liveActive: false,
               agentSpeaking: false,
-              status: 'ready',
+              liveGenerating: false,
+              status: s.adjustedDiet ? 'done' : 'ready',
               errorMessage: msg.payload.message,
             }));
             break;
@@ -168,7 +191,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
               ...s,
               liveActive: false,
               agentSpeaking: false,
-              status: s.adjustedDiet ? 'done' : s.status === 'live_connecting' ? 'ready' : (s.status === 'live' ? 'ready' : s.status),
+              liveGenerating: false,
+              status: s.adjustedDiet ? 'done' : (s.status === 'live_connecting' ? 'ready' : (s.status === 'live' ? 'ready' : s.status)),
             }));
             break;
 
@@ -237,7 +261,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const startLive = useCallback(() => {
     console.log('[ctx] startLive called');
     clearLiveTimeout();
-    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false }));
+    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false, planReady: false, liveGenerating: false }));
     send({ type: 'start_live' });
 
     liveTimeoutRef.current = setTimeout(() => {

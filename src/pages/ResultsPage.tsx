@@ -238,7 +238,10 @@ function PdfDownloadButton({ state, adjustedMacros, baselineMacros }: { state: a
 function buildPdfHtml(state: any, adjustedMacros: any, baselineMacros: any): string {
   const diet = state.adjustedDiet;
   const baseline = state.extractedDiet;
-  const transcript = state.transcript || 'Not provided';
+  const liveTranscriptText = state.liveTranscript?.length
+    ? state.liveTranscript.map(t => `${t.role === 'user' ? 'You' : 'Agent'}: ${t.text}`).join('\n')
+    : '';
+  const transcript = liveTranscriptText || state.transcript || 'Not provided';
 
   const mealRows = (diet?.meals || []).map((meal: any) =>
     `<div style="break-inside:avoid;margin-bottom:16px;">

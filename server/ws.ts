@@ -153,13 +153,13 @@ export function attachWs(server: Server) {
 
                     if (result?.meals?.length) {
                       send(ws, { type: 'adjusted_diet', payload: result });
-                      live.respondToTool(id, name, { success: true, message: 'Daily plan generated successfully. Tell the user their plan is ready and they can view it now.' });
+                      live.respondToTool(id, name, { success: true, message: 'The adjusted daily plan has been generated and sent to the user. Tell the user their plan is ready and they will be redirected to the results page momentarily. Keep it brief — one or two sentences.' });
                     } else {
-                      live.respondToTool(id, name, { success: false, message: 'Could not generate the plan. Ask the user to try again.' });
+                      live.respondToTool(id, name, { success: false, message: 'The plan could not be generated. Apologize briefly and suggest the user try again or use text mode.' });
                     }
                   } catch (err) {
                     logError('live:tool:generate', err instanceof Error ? err : new Error(String(err)));
-                    live.respondToTool(id, name, { success: false, message: 'Generation failed. Ask the user to try the text fallback.' });
+                    live.respondToTool(id, name, { success: false, message: 'Generation failed. Apologize briefly and suggest the user try the text input mode instead.' });
                   }
                 }
               },
