@@ -76,7 +76,8 @@ export type SessionStatus =
   | 'listening'
   | 'generating'
   | 'done'
-  | 'error';
+  | 'error'
+  | 'live';
 
 export type SessionState = {
   fileName?: string;
@@ -89,6 +90,15 @@ export type SessionState = {
   status: SessionStatus;
   logs: string[];
   errorMessage?: string | null;
+  liveTranscript: LiveTurn[];
+  liveActive: boolean;
+  agentSpeaking: boolean;
+};
+
+// --- Live session transcript ---
+export type LiveTurn = {
+  role: 'user' | 'agent';
+  text: string;
 };
 
 // --- WebSocket message contract ---
@@ -97,7 +107,11 @@ export type ClientWsMessage =
   | { type: 'transcript'; payload: { text: string } }
   | { type: 'health_upload'; payload: { base64: string; mimeType: string; filename?: string } }
   | { type: 'clear_health' }
-  | { type: 'generate_adjusted' };
+  | { type: 'generate_adjusted' }
+  | { type: 'start_live' }
+  | { type: 'audio_chunk'; payload: { data: string } }
+  | { type: 'live_text'; payload: { text: string } }
+  | { type: 'end_live' };
 
 export type ServerWsMessage =
   | { type: 'progress'; payload: { step: string; detail?: string } }
@@ -107,4 +121,11 @@ export type ServerWsMessage =
   | { type: 'health_cleared'; payload: { count: number } }
   | { type: 'adjusted_diet'; payload: AdjustedDiet }
   | { type: 'adjusted_diet_error'; payload: { message: string } }
-  | { type: 'error'; payload: { message: string } };
+  | { type: 'error'; payload: { message: string } }
+  | { type: 'live_ready' }
+  | { type: 'live_audio'; payload: { data: string } }
+  | { type: 'live_input_transcript'; payload: { text: string } }
+  | { type: 'live_output_transcript'; payload: { text: string } }
+  | { type: 'live_interrupted' }
+  | { type: 'live_error'; payload: { message: string } }
+  | { type: 'live_ended' };

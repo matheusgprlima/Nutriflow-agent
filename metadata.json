@@ -1,5 +1,5 @@
 {
-  "name": "DietCoach Navigator",
-  "description": "AI Diet Execution Coach that adjusts food quantities based on daily metrics without introducing new foods.",
+  "name": "NutriFlow Live",
+  "description": "Real-time multimodal daily diet planning agent powered by Gemini Live API. Upload your diet, speak to the agent about your routine, and get an adjusted daily plan.",
   "requestFramePermissions": []
 }

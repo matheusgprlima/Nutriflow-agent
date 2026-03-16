@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { attachWs } from './server/ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
 async function startServer() {
   const app = express();

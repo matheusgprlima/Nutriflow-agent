@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
-import type { SessionState, ClientWsMessage, ServerWsMessage } from '../shared/schemas';
+import type { SessionState, ClientWsMessage, ServerWsMessage, LiveTurn } from '../shared/schemas';
 
 type SessionContextValue = {
   state: SessionState;
@@ -8,6 +8,10 @@ type SessionContextValue = {
   addHealthScreenshot: (file: File) => void;
   clearHealthScreenshots: () => void;
   generateAdjusted: () => void;
+  startLive: () => void;
+  sendAudioChunk: (base64: string) => void;
+  sendLiveText: (text: string) => void;
+  endLive: () => void;
   reset: () => void;
 };
 
@@ -16,6 +20,9 @@ const initialState: SessionState = {
   logs: [],
   healthScreenshotCount: 0,
   healthFileNames: [],
+  liveTranscript: [],
+  liveActive: false,
+  agentSpeaking: false,
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -50,7 +57,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setState((s) => ({ ...s, logs: [...s.logs, 'Connected'] }));
       flushPending(ws);
     };
-    ws.onclose = () => setState((s) => ({ ...s, logs: [...s.logs, 'Disconnected'] }));
+    ws.onclose = () => setState((s) => ({ ...s, logs: [...s.logs, 'Disconnected'], liveActive: false }));
     ws.onerror = () => setState((s) => ({ ...s, status: 'error', errorMessage: 'Connection error' }));
 
     ws.onmessage = (event) => {
@@ -79,6 +86,58 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           case 'adjusted_diet':
             setState((s) => ({ ...s, adjustedDiet: msg.payload, status: 'done', logs: [...s.logs, 'Daily plan ready'] }));
             break;
+
+          // Live session messages
+          case 'live_ready':
+            setState((s) => ({ ...s, liveActive: true, status: 'live', logs: [...s.logs, 'Live session started'] }));
+            break;
+          case 'live_audio':
+            // Audio is handled by the IntakePage audio playback system via a custom event
+            window.dispatchEvent(new CustomEvent('nutriflow:live_audio', { detail: { data: msg.payload.data } }));
+            setState((s) => ({ ...s, agentSpeaking: true }));
+            break;
+          case 'live_input_transcript': {
+            const text = msg.payload.text;
+            if (text.trim()) {
+              setState((s) => {
+                const turns = [...s.liveTranscript];
+                const last = turns[turns.length - 1];
+                if (last?.role === 'user') {
+                  turns[turns.length - 1] = { role: 'user', text: last.text + text };
+                } else {
+                  turns.push({ role: 'user', text });
+                }
+                return { ...s, liveTranscript: turns };
+              });
+            }
+            break;
+          }
+          case 'live_output_transcript': {
+            const text = msg.payload.text;
+            if (text.trim()) {
+              setState((s) => {
+                const turns = [...s.liveTranscript];
+                const last = turns[turns.length - 1];
+                if (last?.role === 'agent') {
+                  turns[turns.length - 1] = { role: 'agent', text: last.text + text };
+                } else {
+                  turns.push({ role: 'agent', text });
+                }
+                return { ...s, liveTranscript: turns, agentSpeaking: true };
+              });
+            }
+            break;
+          }
+          case 'live_interrupted':
+            setState((s) => ({ ...s, agentSpeaking: false }));
+            break;
+          case 'live_error':
+            setState((s) => ({ ...s, liveActive: false, errorMessage: msg.payload.message }));
+            break;
+          case 'live_ended':
+            setState((s) => ({ ...s, liveActive: false, agentSpeaking: false, status: s.adjustedDiet ? 'done' : 'ready' }));
+            break;
+
           default:
             if (msg.type === 'adjusted_diet_error' || msg.type === 'error') {
               setState((s) => ({ ...s, status: 'error', errorMessage: (msg as any).payload?.message || 'Error' }));
@@ -141,6 +200,27 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     send({ type: 'generate_adjusted' });
   }, [send]);
 
+  const startLive = useCallback(() => {
+    setState((s) => ({ ...s, errorMessage: null, liveTranscript: [], agentSpeaking: false }));
+    send({ type: 'start_live' });
+  }, [send]);
+
+  const sendAudioChunk = useCallback((base64: string) => {
+    send({ type: 'audio_chunk', payload: { data: base64 } });
+  }, [send]);
+
+  const sendLiveText = useCallback((text: string) => {
+    send({ type: 'live_text', payload: { text } });
+    setState((s) => ({
+      ...s,
+      liveTranscript: [...s.liveTranscript, { role: 'user', text }],
+    }));
+  }, [send]);
+
+  const endLive = useCallback(() => {
+    send({ type: 'end_live' });
+  }, [send]);
+
   const reset = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     transcriptRef.current = '';
@@ -148,7 +228,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setState(initialState);
   }, []);
 
-  const value: SessionContextValue = { state, sendDietFile, setTranscript, addHealthScreenshot, clearHealthScreenshots, generateAdjusted, reset };
+  const value: SessionContextValue = {
+    state, sendDietFile, setTranscript, addHealthScreenshot,
+    clearHealthScreenshots, generateAdjusted,
+    startLive, sendAudioChunk, sendLiveText, endLive, reset,
+  };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 
