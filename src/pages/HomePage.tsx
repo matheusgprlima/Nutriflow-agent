@@ -14,14 +14,14 @@ export default function HomePage() {
         <div className="text-center space-y-6">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-medium">
             <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            Daily diet adjustment
+            Live text diet planning
           </div>
           <h1 className="text-5xl md:text-7xl font-bold tracking-tight text-white">
             Your diet, <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">adjusted for today</span>
           </h1>
           <p className="text-xl text-gray-400 max-w-2xl mx-auto">
-            Upload your baseline diet, describe your routine and context for today, and get an adjusted plan with the same foods and better-fit portions.
+            Upload your baseline diet, answer a few quick live text questions about today, and get an adjusted plan with the same foods and better-fit portions.
           </p>
           <div className="flex justify-center pt-4">
             <Button size="lg" onClick={() => navigate('/intake')} icon={<ArrowRight className="w-5 h-5" />} className="px-8 py-6 text-lg">
@@ -49,8 +49,8 @@ export default function HomePage() {
             <div className="w-10 h-10 bg-accent/10 rounded-xl flex items-center justify-center">
               <MessageSquareText className="w-5 h-5 text-accent" />
             </div>
-            <h3 className="text-lg font-semibold text-white">3. Tell us about your day</h3>
-            <p className="text-sm text-gray-400">Use text to share training, recovery, energy, stress, appetite, and schedule context for today.</p>
+            <h3 className="text-lg font-semibold text-white">3. Live text chat</h3>
+            <p className="text-sm text-gray-400">A planning agent asks short questions about training, recovery, energy, appetite, and schedule context.</p>
           </GlassCard>
           <GlassCard className="space-y-3" hoverEffect>
             <div className="w-10 h-10 bg-purple-500/10 rounded-xl flex items-center justify-center">

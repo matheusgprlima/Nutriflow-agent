@@ -15,6 +15,7 @@ type Session = {
 };
 
 const MAX_HEALTH = 3;
+const LIVE_TEXT_KICKOFF = 'Start the live planning chat now. Briefly acknowledge the baseline diet, mention activity data if available, and ask your first short question about today.';
 
 function send(ws: WebSocket, msg: object) {
   if (ws.readyState === WebSocket.OPEN) {
@@ -125,6 +126,7 @@ export function attachWs(server: Server) {
               onReady: () => {
                 console.log('[ws] Live session ready, sending live_ready to client');
                 send(ws, { type: 'live_ready' });
+                live.sendText(LIVE_TEXT_KICKOFF);
               },
               onAudio: (data) => send(ws, { type: 'live_audio', payload: { data } }),
               onInputTranscript: (text) => send(ws, { type: 'live_input_transcript', payload: { text } }),
@@ -152,6 +154,7 @@ export function attachWs(server: Server) {
                   const startedAt = Date.now();
                   try {
                     const routineSummary = args.routine_summary || 'No specific routine provided.';
+                    session.transcript = routineSummary;
                     console.log(`[ws] Starting generateAdjustedDiet for tool ${name}:${id}`);
                     send(ws, { type: 'progress', payload: { step: 'generating', detail: 'Agent is generating your plan…' } });
                     const result = await generateAdjustedDiet(
