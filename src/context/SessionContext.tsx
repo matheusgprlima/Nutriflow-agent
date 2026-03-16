@@ -104,19 +104,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             });
             break;
           case 'extraction_result':
-            transcriptRef.current = '';
-            setState((s) => ({
-              ...s,
-              extractedDiet: msg.payload.diet,
-              transcript: '',
-              adjustedDiet: null,
-              liveTranscript: [],
-              liveActive: false,
-              agentSpeaking: false,
-              liveGenerating: false,
-              status: 'ready',
-              logs: [...s.logs, 'Diet extracted'],
-            }));
+            setState((s) => ({ ...s, extractedDiet: msg.payload.diet, status: 'ready', logs: [...s.logs, 'Diet extracted'] }));
             break;
           case 'extraction_error':
             setState((s) => ({ ...s, status: 'error', errorMessage: msg.payload.message }));
@@ -144,14 +132,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           case 'live_ready':
             console.log('[ctx] live_ready received');
             clearLiveTimeout();
-            setState((s) => ({
-              ...s,
-              liveActive: true,
-              status: 'live',
-              errorMessage: null,
-              agentSpeaking: true,
-              logs: [...s.logs, 'Live session started'],
-            }));
+            setState((s) => ({ ...s, liveActive: true, status: 'live', errorMessage: null, logs: [...s.logs, 'Live session started'] }));
             break;
           case 'live_audio':
             window.dispatchEvent(new CustomEvent('nutriflow:live_audio', { detail: { data: msg.payload.data } }));
@@ -161,8 +142,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             });
             break;
           case 'live_input_transcript': {
-            // The text-chat UI appends user turns locally so we can ignore
-            // echoed input transcripts from the Live API.
+            const text = msg.payload.text;
+            if (text.trim()) {
+              setState((s) => {
+                const turns = [...s.liveTranscript];
+                const last = turns[turns.length - 1];
+                if (last?.role === 'user') {
+                  turns[turns.length - 1] = { role: 'user', text: last.text + text };
+                } else {
+                  turns.push({ role: 'user', text });
+                }
+                return { ...s, liveTranscript: turns, agentSpeaking: false };
+              });
+            }
             break;
           }
           case 'live_output_transcript': {
@@ -179,7 +171,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
                   turns.push({ role: 'agent', text });
                   console.log(`[ctx] output_transcript new turn: "${text.slice(0, 80)}"`);
                 }
-                return { ...s, liveTranscript: turns, agentSpeaking: true };
+                return { ...s, liveTranscript: turns };
               });
             }
             break;
@@ -245,25 +237,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const MAX_SIZE = 20 * 1024 * 1024;
     if (file.size === 0) { setState((s) => ({ ...s, status: 'error', errorMessage: 'File is empty.' })); return; }
     if (file.size > MAX_SIZE) { setState((s) => ({ ...s, status: 'error', errorMessage: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 20 MB.` })); return; }
-    clearLiveTimeout();
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    pendingRef.current = [];
-    transcriptRef.current = '';
-    setState((s) => ({
-      ...s,
-      status: 'extracting',
-      errorMessage: null,
-      fileName: file.name,
-      transcript: '',
-      adjustedDiet: null,
-      liveTranscript: [],
-      liveActive: false,
-      agentSpeaking: false,
-      liveGenerating: false,
-    }));
+    setState((s) => ({ ...s, status: 'extracting', errorMessage: null, fileName: file.name }));
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = (reader.result as string).split(',')[1];
@@ -272,7 +246,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     };
     reader.onerror = () => { setState((s) => ({ ...s, status: 'error', errorMessage: 'Failed to read file.' })); };
     reader.readAsDataURL(file);
-  }, [send, clearLiveTimeout]);
+  }, [send]);
 
   const addHealthScreenshot = useCallback((file: File) => {
     if (file.size > 10 * 1024 * 1024) { setState((s) => ({ ...s, errorMessage: 'Screenshot too large (max 10 MB).' })); return; }
@@ -308,18 +282,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const startLive = useCallback(() => {
     console.log('[ctx] startLive called');
     clearLiveTimeout();
-    transcriptRef.current = '';
-    setState((s) => ({
-      ...s,
-      status: 'live_connecting',
-      errorMessage: null,
-      transcript: '',
-      liveTranscript: [],
-      agentSpeaking: false,
-      liveActive: false,
-      adjustedDiet: null,
-      liveGenerating: false,
-    }));
+    setState((s) => ({ ...s, status: 'live_connecting', errorMessage: null, liveTranscript: [], agentSpeaking: false, liveActive: false, adjustedDiet: null, liveGenerating: false }));
     send({ type: 'start_live' });
 
     liveTimeoutRef.current = setTimeout(() => {
@@ -338,13 +301,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [send]);
 
   const sendLiveText = useCallback((text: string) => {
-    const nextTranscript = transcriptRef.current ? `${transcriptRef.current}\n${text}` : text;
-    transcriptRef.current = nextTranscript;
     send({ type: 'live_text', payload: { text } });
     setState((s) => ({
       ...s,
-      transcript: nextTranscript,
-      agentSpeaking: true,
       liveTranscript: [...s.liveTranscript, { role: 'user', text }],
     }));
   }, [send]);
