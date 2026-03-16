@@ -57,12 +57,12 @@ export default function IntakePage() {
   useEffect(() => {
     if (!state.closingDone) return;
     if (closingTimerRef.current) return;
-    console.log('[intake] closingDone=true → starting 2s redirect timer');
+    console.log('[intake] closingDone=true → starting 5s redirect timer');
     closingTimerRef.current = setTimeout(() => {
       closingTimerRef.current = null;
-      console.log('[intake] 2s timer fired → navigating to /results');
+      console.log('[intake] 5s timer fired → navigating to /results');
       navigate('/results');
-    }, 2000);
+    }, 5000);
   }, [state.closingDone, navigate]);
 
   // Failsafe: 30s max wait after plan ready in live context
@@ -281,6 +281,22 @@ export default function IntakePage() {
           <h1 className="text-3xl font-bold text-white">Plan your day</h1>
           <p className="text-gray-400">Upload your diet, talk to the agent, and get your adjusted daily plan.</p>
         </div>
+
+        {/* Universal CTA: always visible when plan is ready and session is not actively live */}
+        {state.adjustedDiet && !state.liveActive && !isLiveConnecting && (
+          <div className="bg-primary/10 border border-primary/30 rounded-2xl p-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="w-6 h-6 text-primary shrink-0" />
+              <div>
+                <p className="text-base font-semibold text-white">Your daily plan is ready</p>
+                <p className="text-xs text-gray-400 mt-0.5">View your adjusted plan, nutrition analytics, and download PDF.</p>
+              </div>
+            </div>
+            <Button onClick={() => navigate('/results')} icon={<ArrowRight className="w-4 h-4" />}>
+              View results
+            </Button>
+          </div>
+        )}
 
         {state.errorMessage && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 text-red-200 text-sm">
@@ -529,6 +545,20 @@ export default function IntakePage() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Plan ready, session ended, but closingDone not set — show transcript */}
+          {state.planReady && !state.liveActive && !state.closingDone && state.liveTranscript.length > 0 && (
+            <div className="bg-black/30 rounded-xl p-4 max-h-[250px] overflow-y-auto space-y-3 opacity-70">
+              {state.liveTranscript.map((turn, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${turn.role === 'user' ? 'bg-white/10' : 'bg-primary/10'}`}>
+                    {turn.role === 'user' ? <User className="w-3 h-3 text-gray-400" /> : <Bot className="w-3 h-3 text-primary" />}
+                  </div>
+                  <p className={`text-sm ${turn.role === 'user' ? 'text-gray-400' : 'text-gray-300'}`}>{turn.text}</p>
+                </div>
+              ))}
             </div>
           )}
 

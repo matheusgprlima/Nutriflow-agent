@@ -118,12 +118,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             break;
           case 'adjusted_diet':
             setState((s) => {
-              console.log('[ctx] adjusted_diet received | liveActive=', s.liveActive, 'status=', s.status);
+              const alreadyEnded = !s.liveActive && s.liveTranscript.length > 0;
+              console.log('[ctx] adjusted_diet received | liveActive=', s.liveActive, 'status=', s.status, 'alreadyEnded=', alreadyEnded);
               return {
                 ...s,
                 adjustedDiet: msg.payload,
                 liveGenerating: false,
                 planReady: true,
+                closingDone: alreadyEnded ? true : s.closingDone,
                 status: s.liveActive ? 'live' : 'done',
                 logs: [...s.logs, 'Daily plan ready'],
               };
@@ -163,9 +165,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
                 const turns = [...s.liveTranscript];
                 const last = turns[turns.length - 1];
                 if (last?.role === 'agent') {
+                  const prevLen = last.text.length;
                   turns[turns.length - 1] = { role: 'agent', text: last.text + text };
+                  console.log(`[ctx] output_transcript appended (${prevLen}→${prevLen + text.length}): "${text.slice(0, 80)}"`);
                 } else {
                   turns.push({ role: 'agent', text });
+                  console.log(`[ctx] output_transcript new turn: "${text.slice(0, 80)}"`);
                 }
                 return { ...s, liveTranscript: turns };
               });
